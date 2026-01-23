@@ -1,0 +1,23 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "taiyiagent"
+version = "0.1.0"
+description = "Taiyi AI Agent CLI"
+requires-python = ">=3.10"
+dependencies = [
+    "textual>=0.40.0",      # 终端 UI 框架
+    "rich>=13.0.0",         # 富文本输出
+    "httpx>=0.25.0",        # 异步 HTTP（如果 LLM 需要）
+    "openai>=1.0.0",        # OpenAI API 客户端
+    "pydantic>=2.0.0",      # 数据验证
+    "prompt_toolkit>=3.0.52",
+]
+
+[project.scripts]
+taiyi = "taiyi.cli.cli:main"         # 终端输入 taiyi 时执行 cli.py 的 main()
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/taiyi"]

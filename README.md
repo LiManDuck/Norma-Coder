@@ -12,13 +12,13 @@
 git clone 本项目
 pip install -r requirements.txt
 
-pip install -e . 
+pip install -e .
 
-终端执行 taiyi ,显示输入框则安装成功
+终端执行 norma ,显示输入框则安装成功
 ```
 
 模型配置
-在 ~/.taiyi/config.json下配置 openai模型接口
+在 ~/.norma/config.json下配置 openai模型接口
 ```json
 {
   "model": "",
@@ -31,14 +31,14 @@ pip install -e .
 ## python端使用
 
 ```
-from taiyi.core.agent_types import BaseAgent
-from taiyi.agent.taiyi_coder import (
+from norma.core.agent_types import BaseAgent
+from norma.agent.norma_coder import (
 
-    TaiyiArtifact,
-    TaiyiCoder
+    NormaArtifact,
+    NormaCoder
 )
-from taiyi.core.openai_llm import OpenAILLM
-from taiyi.util.console import AgentConsole 
+from norma.core.openai_llm import OpenAILLM
+from norma.util.console import AgentConsole
 
 openai_llm  = OpenAILLM(
 
@@ -50,11 +50,11 @@ openai_llm  = OpenAILLM(
 asyncio.run(
 
 
-        TaiyiCoder(
+        NormaCoder(
             llm= openai_llm,
             cwd = '/usr2/cli_ability_test/ucl_workspace '  # 输入工作目录
 
-            
+
         ).run(task= '你的具体的任务')
 )
 

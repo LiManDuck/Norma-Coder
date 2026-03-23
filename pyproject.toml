@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "taiyiagent"
+name = "normaagent"
 version = "0.1.0"
-description = "Taiyi AI Agent CLI"
+description = "Norma AI Agent CLI"
 requires-python = ">=3.10"
 dependencies = [
     "textual>=0.40.0",      # 终端 UI 框架
@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [project.scripts]
-taiyi = "taiyi.cli.cli:main"         # 终端输入 taiyi 时执行 cli.py 的 main()
+norma = "norma.cli.cli:main"         # 终端输入 norma 时执行 cli.py 的 main()
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/taiyi"]
+packages = ["src/norma"]

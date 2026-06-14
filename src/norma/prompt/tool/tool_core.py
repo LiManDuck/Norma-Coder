@@ -29,19 +29,14 @@ from norma.core.tool_types import (
     ToolRequestResult,
     ToolSchema
 )
-from norma.tool import (
-    ReadTool,
-    LsTool,
-    GlobTool,
-    GrepTool,
-    EditTool,
-    WriteTool,
-    TodoWriteTool,
-    # bash工具
-    
-    BashTool
-
-)
+from norma.prompt.tool.read_tool.read_tool import ReadTool
+from norma.prompt.tool.ls_tool.ls_tool import LsTool
+from norma.prompt.tool.glob_tool.glob_tool import GlobTool
+from norma.prompt.tool.grep_tool.grep_tool import GrepTool
+from norma.prompt.tool.edit_tool.edit_tool import EditTool
+from norma.prompt.tool.write_tool.write_tool import WriteTool
+from norma.prompt.tool.todo_tool.todo_tool import TodoWriteTool
+from norma.prompt.tool.bash_tool.bash_tool import BashTool
 
 
 

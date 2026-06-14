@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# 虚拟环境
+.venv/
+venv/
+
+# 工具/编辑器
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# 项目内部 - AI 中间产物 / 占位文件
+ai-work/
+AGENT.md

@@ -118,22 +118,18 @@ class EditTool(Tool):
 
     def is_file_read(self, file_path: str) -> bool:
         """检查文件是否已被读取
-        
+
         Args:
             file_path: 文件路径（可以是相对路径或绝对路径）
-            
+
         Returns:
             如果文件已被读取返回True，否则返回False
         """
-        # 转换为绝对路径
-        return True
         path = Path(file_path)
         if not path.is_absolute():
             path = self.cwd / path
-        
+
         abs_path = str(path.resolve())
-        
-        
         return abs_path in self.readed_files
 
 

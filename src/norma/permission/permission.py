@@ -39,16 +39,21 @@ READ_ONLY_TOOLS: Set[str] = {
     "Glob",
     "Grep",
     "TodoWrite",   # TodoWrite 只是写入内部 todo 列表，不影响磁盘
+    "TaskList",
+    "TaskGet",
 }
 
 WRITE_TOOLS: Set[str] = {
     "Edit",
     "Write",
+    "TaskCreate",
+    "TaskUpdate",
 }
 
 DANGEROUS_TOOLS: Set[str] = {
     "Bash",
     "Agent",
+    "Skill",
 }
 
 

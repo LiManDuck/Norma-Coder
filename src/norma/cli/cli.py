@@ -3,11 +3,11 @@
 Norma AI Agent 命令行界面
 主入口点，初始化并启动 REPL
 
-更新（2026-06-14）
+更新（2026-06-15）
 ------------------
-- 加载 ``permission`` / ``hooks`` 配置
-- 启动 messagebus 并把 PermissionChecker / HookManager / UserInputManager
-  注入到 NormaCoder 中
+- 加载 MCP 服务器配置并连接
+- 支持多 Provider 模型配置
+- 集成 command 系统
 """
 import argparse
 import asyncio
@@ -38,6 +38,10 @@ from norma.hook import (
     HookEvent,
     HookManager,
 )
+from norma.reminder import ReminderRegistry
+from norma.reminder.task_reminder import TaskNudgeReminder
+from norma.skill import SkillRegistry
+from norma.mcp import MCPManager
 
 
 class NormaCLI:
@@ -61,6 +65,20 @@ class NormaCLI:
         )
         self.hook_manager.attach(self.message_bus)
 
+        # ---- reminder / skill ----
+        self.reminder_registry = ReminderRegistry()
+        self.reminder_registry.register(TaskNudgeReminder())
+        self.skill_registry = SkillRegistry.from_default_dirs(cwd=Path.cwd())
+        if self.skill_registry.all():
+            self.console.print(
+                f"[green]✓ Loaded {len(self.skill_registry.all())} skill(s): "
+                f"{', '.join(self.skill_registry.names())}[/green]"
+            )
+
+        # ---- MCP ----
+        self.mcp_manager = MCPManager()
+        self.mcp_manager.load_config(self.config)
+
         self._init_agent()
 
     # ----------------------- 配置 / 代理 -----------------------
@@ -72,7 +90,6 @@ class NormaCLI:
 
         no_proxy_list = [
             '127.0.0.1', 'localhost',
-            '*.huawei.com', 'huawei.com',
         ]
         if hostname:
             no_proxy_list.append(hostname)
@@ -81,7 +98,6 @@ class NormaCLI:
 
         os.environ['NO_PROXY'] = ','.join(no_proxy_list)
         os.environ['no_proxy'] = os.environ['NO_PROXY']
-        self.console.print(f"[dim]NO_PROXY: {os.environ['NO_PROXY']}[/dim]")
 
     def load_config(self) -> dict:
         config_path = Path.home() / ".norma" / "config.json"
@@ -95,6 +111,8 @@ class NormaCLI:
                 "tools": {},
             },
             "hooks": {},
+            "providers": {},
+            "mcpServers": {},
         }
         if config_path.exists():
             try:
@@ -115,15 +133,41 @@ class NormaCLI:
                 )
         return default_config
 
+    # ----------------------- LLM / Provider -----------------------
+
+    def _resolve_llm(self) -> OpenAILLM:
+        """根据配置解析 LLM 实例（支持多 Provider）"""
+        providers = self.config.get("providers", {})
+        default_provider = self.config.get("default_provider")
+        model = self.config.get("model", "")
+        base_url = self.config.get("base_url", "")
+        api_key = self.config.get("api_key", "")
+
+        # 如果有 default_provider 配置且 providers 中存在
+        active_url = base_url
+        active_key = api_key
+        if default_provider and default_provider in providers:
+            prov = providers[default_provider]
+            active_url = prov.get("url", base_url)
+            active_key = prov.get("api_key", api_key)
+            if "models" in prov and model not in prov.get("models", []):
+                prov_models = prov.get("models", [])
+                if prov_models:
+                    model = prov_models[0]
+
+        return OpenAILLM(
+            model=model,
+            api_key=active_key,
+            base_url=active_url,
+            providers=providers,
+            default_provider=default_provider,
+        )
+
     # ----------------------- Agent -----------------------
 
     def _init_agent(self):
         try:
-            self.llm = OpenAILLM(
-                model=self.config["model"],
-                api_key=self.config["api_key"],
-                base_url=self.config["base_url"],
-            )
+            self.llm = self._resolve_llm()
             self.agent = NormaCoder(
                 name="normacoder",
                 llm=self.llm,
@@ -132,6 +176,8 @@ class NormaCLI:
                 permission_checker=self.permission_checker,
                 hook_manager=self.hook_manager,
                 user_input_manager=self.user_input_manager,
+                reminder_registry=self.reminder_registry,
+                skill_registry=self.skill_registry,
             )
             self.console.print(
                 f"[green]✓ Agent初始化成功 "
@@ -146,6 +192,18 @@ class NormaCLI:
     async def run(self):
         await self.message_bus.start()
         try:
+            # 连接 MCP 服务器
+            if self.mcp_manager.clients:
+                self.console.print("[dim]正在连接 MCP 服务器...[/dim]")
+                await self.mcp_manager.connect_all()
+                mcp_tools = self.mcp_manager.tools
+                if mcp_tools:
+                    for tool in mcp_tools:
+                        self.agent.tool_manager.register_tool(tool)
+                    self.console.print(
+                        f"[green]✓ 已加载 {len(mcp_tools)} 个 MCP 工具[/green]"
+                    )
+
             await self.hook_manager.dispatch(HookEvent.SESSION_BEGIN)
             repl = NormaREPL(agent=self.agent, cwd=os.getcwd())
             await repl.run()
@@ -154,26 +212,8 @@ class NormaCLI:
                 await self.hook_manager.dispatch(HookEvent.SESSION_END)
             except Exception:
                 pass
+            await self.mcp_manager.disconnect_all()
             await self.message_bus.stop()
-
-
-def create_parser():
-    parser = argparse.ArgumentParser(
-        prog="norma",
-        description="Norma - Norma AI Agent 智能命令行助手",
-    )
-    parser.add_argument("--model", help="指定使用的模型名称")
-    parser.add_argument("--api-key", help="指定API密钥")
-    parser.add_argument("--base-url", help="指定API基础URL")
-    parser.add_argument("--query", help="执行单个查询后退出")
-    parser.add_argument("--stream", action="store_true", help="启用流式输出")
-    parser.add_argument(
-        "--show-config", action="store_true", help="显示当前配置并退出"
-    )
-    parser.add_argument(
-        "--version", action="version", version="Norma AI Agent v0.1.0"
-    )
-    return parser
 
 
 def main():
@@ -183,11 +223,14 @@ def main():
         epilog="""
 示例:
   norma                    # 启动交互式会话
-  norma --config custom    # 使用自定义配置
+  norma --model glm-4      # 指定模型
         """,
     )
     parser.add_argument(
-        '--config', type=str, help='配置文件路径（可选）'
+        '--model', type=str, help='指定模型名称'
+    )
+    parser.add_argument(
+        '--config', type=str, help='配置文件路径'
     )
     parser.parse_args()
 
@@ -195,7 +238,7 @@ def main():
         cli = NormaCLI()
         asyncio.run(cli.run())
     except KeyboardInterrupt:
-        print("\n\n👋 程序已退出")
+        print("\n\n程序已退出")
         sys.exit(0)
     except Exception as e:
         Console().print(f"[red]启动失败: {e}[/red]")

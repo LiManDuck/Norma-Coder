@@ -1,13 +1,11 @@
 """
 NormaCoder - 主 Agent
 
-本次更新（2026-06-14）
-----------------------
-- 接入 messagebus / 权限系统 / hook 系统 / 子代理工具 (AgentTool)
-- 工具调用前发布 ``AGENT_TOOL_REQUEST`` 消息并执行权限检查；
-  权限被 DENY 的工具直接产出错误 ToolMessage；
-  权限为 ASK 的走 messagebus 与用户确认；
-- 工具调用后发布 ``AGENT_TOOL_RESULT`` 触发 ``tool-execute-after`` hook。
+更新（2026-06-15）
+------------------
+- 以 finish_reason 驱动主循环：stop → 结束，tool_calls → 继续循环
+- 支持一次回复同时包含文本内容和 tool_calls
+- 工具目录从 prompt/tool/ 迁移至 tool/
 """
 
 from typing import (
@@ -51,7 +49,7 @@ from norma.memory.agent_memory import (
     AgentMemory
 )
 from norma.prompt.system_prompt import SystemPromptService
-from norma.prompt.tool.tool_core import (
+from norma.tool.tool_core import (
     NormaArtifact
 )
 
@@ -62,9 +60,13 @@ from norma.tool import (
     GrepTool,
     EditTool,
     WriteTool,
-    TodoWriteTool,
     BashTool,
     AgentTool,
+    TaskCreateTool,
+    TaskGetTool,
+    TaskListTool,
+    TaskUpdateTool,
+    SkillTool,
 )
 
 from norma.messagebus.messagebus import (
@@ -79,6 +81,12 @@ from norma.permission import (
     PermissionDecision,
 )
 from norma.hook import HookEvent, HookManager
+from norma.reminder import (
+    ReminderEvent,
+    ReminderContext,
+    ReminderRegistry,
+)
+from norma.skill import SkillRegistry
 
 
 logger = logging.getLogger(__name__)
@@ -87,6 +95,11 @@ logger = logging.getLogger(__name__)
 class NormaCoder(BaseAgent):
     """
     NormaCoder - 基于LLM的代码助手Agent
+
+    主循环由 finish_reason 驱动:
+    - stop / content_filter → 结束循环，返回最终响应
+    - tool_calls → 执行工具调用后继续循环
+    - length → 上下文超限，触发 compaction 或停止
     """
 
     @property
@@ -102,7 +115,7 @@ class NormaCoder(BaseAgent):
         delta_instructions: Optional[str] = None,
         memory_tool_message_limit: int = 10,
         max_runturns: int = 100,
-        # 新增: 系统总线 / 权限 / hook / 子代理
+        # 系统总线 / 权限 / hook
         message_bus: Optional[MessageBus] = None,
         permission_checker: Optional[PermissionChecker] = None,
         hook_manager: Optional[HookManager] = None,
@@ -110,11 +123,17 @@ class NormaCoder(BaseAgent):
         enable_subagent: bool = True,
         subagent_factory: Optional[Callable[..., BaseAgent]] = None,
         conversation_id: Optional[str] = None,
+        reminder_registry: Optional[ReminderRegistry] = None,
+        skill_registry: Optional[SkillRegistry] = None,
+        enable_skill: bool = True,
+        # compaction
+        compact_threshold: float = 0.75,
     ):
         self._name = name
         self.llm = llm
         self.cwd = cwd
         self.max_runturns = max_runturns
+        self.compact_threshold = compact_threshold
 
         # ---- 系统总线 / 权限 / hook ----
         self.message_bus = message_bus
@@ -125,6 +144,10 @@ class NormaCoder(BaseAgent):
         self._adapter = (
             AgentMessageAdapter(message_bus) if message_bus is not None else None
         )
+        # ---- reminder ----
+        self.reminder_registry = reminder_registry or ReminderRegistry()
+        # ---- skill ----
+        self.skill_registry = skill_registry or SkillRegistry()
 
         # ---- 工具 ----
         default_tools: List[Tool] = [
@@ -134,13 +157,25 @@ class NormaCoder(BaseAgent):
             GrepTool(),
             EditTool(),
             WriteTool(),
-            TodoWriteTool(),
+            TaskCreateTool(),
+            TaskListTool(),
+            TaskGetTool(),
+            TaskUpdateTool(),
             BashTool(cwd=cwd),
         ]
 
         if enable_subagent:
             factory = subagent_factory or self._default_subagent_factory
             default_tools.append(AgentTool(agent_factory=factory))
+
+        if enable_skill and self.skill_registry.all():
+            skill_factory = subagent_factory or self._default_subagent_factory
+            default_tools.append(
+                SkillTool(
+                    registry=self.skill_registry,
+                    agent_factory=skill_factory,
+                )
+            )
 
         all_tools = default_tools + (tools or [])
         self.tool_manager = NormaArtifact(tools=all_tools)
@@ -167,14 +202,17 @@ class NormaCoder(BaseAgent):
             max_runturns=self.max_runturns,
             message_bus=self.message_bus,
             permission_checker=self.permission_checker,
-            hook_manager=None,            # 子 agent 不再触发 hook
+            hook_manager=None,
             user_input_manager=self.user_input_manager,
-            enable_subagent=False,        # 防止递归 spawn
+            enable_subagent=False,
             conversation_id=self.conversation_id,
+            reminder_registry=self.reminder_registry,
+            skill_registry=self.skill_registry,
+            enable_skill=False,
         )
 
     # =====================================================
-    # 主循环
+    # 主循环 - 由 finish_reason 驱动
     # =====================================================
     async def run(self, query: str) -> AsyncGenerator[Union[AgentEvent, AgentResponse], None]:
         start_time = datetime.now()
@@ -192,7 +230,24 @@ class NormaCoder(BaseAgent):
 
             await self.memory.push_messages([UserMessage(content=query)])
 
+            # ---- reminder: user-input 之后 ----
+            user_reminder = self.reminder_registry.collect(
+                ReminderContext(
+                    event=ReminderEvent.USER_INPUT,
+                    conversation_id=self.conversation_id,
+                    user_input=query,
+                )
+            )
+            if user_reminder:
+                await self.memory.push_messages([UserMessage(content=user_reminder)])
+
             for _turn in range(self.max_runturns):
+                # ---- 检查是否需要 compaction ----
+                if await self._should_compact():
+                    compact_event = await self._do_compact()
+                    if compact_event:
+                        yield compact_event
+
                 history_messages = await self.memory.pull_messages()
 
                 llm_request = LLMRequest(
@@ -220,9 +275,21 @@ class NormaCoder(BaseAgent):
                 await self._publish(llm_response_event)
                 yield llm_response_event
 
+                # 将 assistant 消息（可能同时包含文本和 tool_calls）推入记忆
                 await self.memory.push_messages([llm_response.response_message])
 
-                if llm_response.tool_calls:
+                # ---- 以 finish_reason 决定是否继续 ----
+                finish_reason = llm_response.finish_reason
+
+                if finish_reason == "stop" or finish_reason == "content_filter":
+                    # 模型结束回复 → 返回最终响应
+                    response = self._build_final_response(query, events, llm_response)
+                    await self._publish_agent_response(response)
+                    yield response
+                    break
+
+                elif finish_reason == "tool_calls" and llm_response.tool_calls:
+                    # 有工具调用 → 执行工具，继续循环
                     tool_requests = [
                         ToolRequest(
                             tool_call_id=tc.tool_call_id or str(uuid.uuid4()),
@@ -272,22 +339,33 @@ class NormaCoder(BaseAgent):
                     ]
                     await self.memory.push_messages(tool_messages)
 
-                else:
-                    final_messages = await self.memory.pull_messages()
-                    response = AgentResponse(
-                        agent_name=self.name,
-                        input_message=[UserMessage(content=query)],
-                        tools=list(self.tool_manager._tools.values()),
-                        prompt_usage=None,
-                        event_list=events,
-                        message_list=final_messages,
-                        response=llm_response.response_message.content or "",
-                        tool_call_sequence=None,
-                        tool_call_nums=sum(
-                            1 for msg in final_messages
-                            if isinstance(msg, ToolMessage)
-                        ),
+                    # ---- reminder: tool-result 之后 ----
+                    tool_reminder = self.reminder_registry.collect(
+                        ReminderContext(
+                            event=ReminderEvent.TOOL_RESULT,
+                            conversation_id=self.conversation_id,
+                            turn_index=_turn + 1,
+                            tool_names=[r.tool_call_name for r in tool_results],
+                        )
                     )
+                    if tool_reminder:
+                        await self.memory.push_messages(
+                            [UserMessage(content=tool_reminder)]
+                        )
+                    # 继续下一轮循环
+
+                elif finish_reason == "length":
+                    # 上下文超限 → 尝试 compaction
+                    logger.warning("finish_reason=length, attempting compaction")
+                    compact_event = await self._do_compact()
+                    if compact_event:
+                        yield compact_event
+                    # compaction 后继续循环
+
+                else:
+                    # 其他未知情况 → 结束
+                    logger.warning(f"Unknown finish_reason: {finish_reason}, stopping")
+                    response = self._build_final_response(query, events, llm_response)
                     await self._publish_agent_response(response)
                     yield response
                     break
@@ -339,8 +417,101 @@ class NormaCoder(BaseAgent):
             yield error_response
 
     # =====================================================
+    # Compaction（上下文压缩）
+    # =====================================================
+    async def _should_compact(self) -> bool:
+        """判断是否需要压缩上下文"""
+        if not hasattr(self.llm, 'max_context_tokens'):
+            return False
+        max_tokens = self.llm.max_context_tokens  # type: ignore
+        if max_tokens <= 0:
+            return False
+        messages = self.memory._messages
+        estimated = 0
+        if hasattr(self.llm, 'estimate_tokens'):
+            estimated = self.llm.estimate_tokens(messages)  # type: ignore
+        else:
+            # 粗略估计
+            total_chars = sum(len(m.content) for m in messages if hasattr(m, 'content') and m.content)
+            estimated = int(total_chars / 2.5)
+        return estimated > max_tokens * self.compact_threshold
+
+    async def _do_compact(self):
+        """执行上下文压缩：让模型总结历史消息，保留关键信息"""
+        logger.info("Starting context compaction")
+        try:
+            messages = self.memory._messages
+            # 构建摘要请求
+            summary_prompt = (
+                "请总结以下对话历史，保留关键信息：用户请求、已完成的操作、"
+                "重要发现、当前进度、待办事项。不要丢失任何关键上下文。"
+                "\n\n只输出总结文本，不要调用任何工具。"
+            )
+
+            # 取系统提示 + 摘要提示 + 历史消息
+            system_msg = messages[0] if messages and isinstance(messages[0], SystemMessage) else None
+            compact_messages = []
+            if system_msg:
+                compact_messages.append(system_msg)
+            compact_messages.append(UserMessage(content=summary_prompt))
+
+            # 将历史消息压缩为一个字符串
+            history_text_parts = []
+            for msg in messages[1:]:
+                if isinstance(msg, SystemMessage):
+                    continue
+                if isinstance(msg, UserMessage):
+                    history_text_parts.append(f"[User]: {msg.content}")
+                elif isinstance(msg, AssistantMessage):
+                    if msg.content:
+                        history_text_parts.append(f"[Assistant]: {msg.content}")
+                    if msg.tool_calls:
+                        for tc in msg.tool_calls:
+                            history_text_parts.append(f"[Tool Call: {tc.tool_call_name}]: {json.dumps(tc.tool_call_arguments, ensure_ascii=False)}")
+                elif isinstance(msg, ToolMessage):
+                    history_text_parts.append(f"[Tool Result: {msg.tool_result.tool_call_name}]: {msg.content[:500]}")
+
+            history_text = "\n".join(history_text_parts)
+            compact_messages.append(UserMessage(content=history_text[-8000:]))
+
+            llm_request = LLMRequest(messages=compact_messages)
+            llm_response = await self.llm.chat(llm_request)
+            summary = llm_response.content or "对话历史已压缩"
+
+            # 重建消息：系统提示 + 压缩标记 + 摘要
+            new_messages = [system_msg] if system_msg else []
+            new_messages.append(UserMessage(content=f"<compact-boundary>\n以下是之前对话的摘要：\n{summary}\n</compact-boundary>"))
+
+            self.memory._messages = new_messages
+            logger.info(f"Compaction complete: {len(messages)} → {len(new_messages)} messages")
+
+        except Exception as e:
+            logger.error(f"Compaction failed: {e}", exc_info=True)
+        return None
+
+    # =====================================================
     # 辅助方法
     # =====================================================
+    def _build_final_response(
+        self, query: str, events: List[AgentEvent], llm_response: LLMResponse
+    ) -> AgentResponse:
+        """构建最终 AgentResponse"""
+        final_messages = self.memory._messages
+        return AgentResponse(
+            agent_name=self.name,
+            input_message=[UserMessage(content=query)],
+            tools=list(self.tool_manager._tools.values()),
+            prompt_usage=None,
+            event_list=events,
+            message_list=final_messages,
+            response=llm_response.response_message.content or "",
+            tool_call_sequence=None,
+            tool_call_nums=sum(
+                1 for msg in final_messages
+                if isinstance(msg, ToolMessage)
+            ),
+        )
+
     async def _apply_permission(
         self, tool_requests: List[ToolRequest]
     ) -> tuple[List[ToolRequest], dict[str, ToolRequestResult]]:
@@ -418,7 +589,6 @@ class NormaCoder(BaseAgent):
             elif req.tool_call_id in executed_by_id:
                 merged.append(executed_by_id[req.tool_call_id])
             else:
-                # 理论上不应该发生
                 merged.append(
                     NormaCoder._make_denied_result(req, "no execution result")
                 )

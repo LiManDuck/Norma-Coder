@@ -1,334 +1,411 @@
 """
-Repo Memory系统
+OpenAI 兼容 API 的 LLM 实现
 
-为每个repo维护一个"笔记本"，记录：
-- 代码结构理解
-- 重要发现
-- 待办事项
-- 学到的模式
-
-设计要点：
-- 以repo为key的字典
-- 简单的字符串存储
-- 支持持久化到磁盘
-- 模型自主管理内容
+支持 OpenAI 格式的 API（包括各类兼容接口），
+提供 chat() 和 stream_chat() 方法。
 """
+
 import json
-from typing import Dict, Any, Optional
-from pathlib import Path
-from datetime import datetime
-from pydantic import BaseModel, Field
 import logging
+from typing import Any, AsyncGenerator, Optional, List, Type, Dict
+
+from openai import AsyncOpenAI
+from openai._types import NOT_GIVEN
+from openai.types.chat import ChatCompletion, ChatCompletionChunk
+from openai.types.chat.chat_completion import Choice
+from pydantic import BaseModel
+
+from norma.core.llm_types import (
+    BaseLLM,
+    LLMRequest,
+    LLMResponse,
+    AssistantMessage,
+    FinishReasons,
+    RequestUsage,
+    ToolRequest,
+)
+from norma.core.tool_types import Tool, ToolSchema
 
 logger = logging.getLogger(__name__)
 
 
-class RepoMemory(BaseModel):
-    """
-    单个Repo的记忆（笔记本）
-    
-    模型可以在这里记录任何有用的信息
-    """
-    repo_name: str
-    content: str = ""
-    last_updated: str = Field(default_factory=lambda: datetime.now().isoformat())
-    metadata: Dict[str, Any] = Field(default_factory=dict)
-    
-    def update(self, new_content: str) -> Dict[str, Any]:
-        """
-        更新记忆内容（替换）
-        
-        Args:
-            new_content: 新的记忆内容
-        
-        Returns:
-            操作结果
-        """
-        self.content = new_content
-        self.last_updated = datetime.now().isoformat()
-        
-        logger.info(f"Updated memory for repo '{self.repo_name}' ({len(new_content)} chars)")
-        
-        return {
-            "status": "success",
-            "message": f"Memory for repo '{self.repo_name}' updated successfully",
-            "content_length": len(new_content)
-        }
-    
-    def append(self, additional_content: str) -> Dict[str, Any]:
-        """
-        追加内容到记忆
-        
-        Args:
-            additional_content: 要追加的内容
-        
-        Returns:
-            操作结果
-        """
-        if self.content:
-            self.content += "\n\n" + additional_content
-        else:
-            self.content = additional_content
-        
-        self.last_updated = datetime.now().isoformat()
-        
-        logger.info(f"Appended to memory for repo '{self.repo_name}' ({len(additional_content)} chars)")
-        
-        return {
-            "status": "success",
-            "message": f"Content appended to repo '{self.repo_name}' memory",
-            "total_length": len(self.content)
-        }
-    
-    def get_content(self) -> str:
-        """
-        获取记忆内容（供模型读取）
-        
-        Returns:
-            格式化的记忆内容
-        """
-        if not self.content:
-            return f"[No memory recorded for {self.repo_name} yet]"
-        
-        return f"""[Memory for {self.repo_name}]
-Last Updated: {self.last_updated}
-
-{self.content}"""
-    
-    def clear(self) -> Dict[str, Any]:
-        """清空记忆"""
-        self.content = ""
-        self.last_updated = datetime.now().isoformat()
-        
-        return {
-            "status": "success",
-            "message": f"Memory for repo '{self.repo_name}' cleared"
-        }
-    
-    def to_dict(self) -> Dict[str, Any]:
-        """转换为字典"""
-        return self.model_dump()
-    
-    @classmethod
-    def from_dict(cls, data: Dict[str, Any]) -> "RepoMemory":
-        """从字典创建"""
-        return cls(**data)
+class ProviderConfig(BaseModel):
+    """Provider 配置"""
+    name: str
+    url: str = ""
+    api_key: str = ""
+    models: List[str] = Field(default_factory=list)
 
 
-class RepoMemoryManager:
-    """
-    管理多个Repo的记忆
-    
-    功能：
-    - 为每个repo维护独立的记忆
-    - 持久化到磁盘
-    - 自动加载和保存
-    """
-    
-    def __init__(self, memory_dir: Optional[Path] = None):
-        """
-        初始化Memory Manager
-        
-        Args:
-            memory_dir: 存储记忆文件的目录（默认~/.repo_agent_memory）
-        """
-        if memory_dir is None:
-            self.memory_dir = Path.home() / '.repo_agent_memory'
-        else:
-            self.memory_dir = Path(memory_dir)
-        
-        self.memory_dir.mkdir(parents=True, exist_ok=True)
-        
-        # 内存中的记忆缓存
-        self.memories: Dict[str, RepoMemory] = {}
-        
-        logger.info(f"RepoMemoryManager initialized with dir: {self.memory_dir}")
-    
-    def get_memory(self, repo_name: str) -> RepoMemory:
-        """
-        获取或创建repo的记忆
-        
-        Args:
-            repo_name: repo名称
-        
-        Returns:
-            RepoMemory实例
-        """
-        if repo_name not in self.memories:
-            # 尝试从磁盘加载
-            memory_file = self.memory_dir / f"{repo_name}.json"
-            
-            if memory_file.exists():
-                try:
-                    with open(memory_file, 'r', encoding='utf-8') as f:
-                        data = json.load(f)
-                    self.memories[repo_name] = RepoMemory.from_dict(data)
-                    logger.info(f"Loaded memory for repo '{repo_name}' from disk")
-                except Exception as e:
-                    logger.error(f"Failed to load memory for '{repo_name}': {e}")
-                    self.memories[repo_name] = RepoMemory(repo_name=repo_name)
-            else:
-                # 创建新的记忆
-                self.memories[repo_name] = RepoMemory(repo_name=repo_name)
-                logger.info(f"Created new memory for repo '{repo_name}'")
-        
-        return self.memories[repo_name]
-    
-    def save_memory(self, repo_name: str) -> bool:
-        """
-        保存指定repo的记忆到磁盘
-        
-        Args:
-            repo_name: repo名称
-        
-        Returns:
-            是否保存成功
-        """
-        if repo_name not in self.memories:
-            logger.warning(f"No memory found for repo '{repo_name}'")
-            return False
-        
-        try:
-            memory_file = self.memory_dir / f"{repo_name}.json"
-            with open(memory_file, 'w', encoding='utf-8') as f:
-                json.dump(
-                    self.memories[repo_name].to_dict(), 
-                    f, 
-                    indent=2, 
-                    ensure_ascii=False
+class OpenAILLM(BaseLLM):
+    """基于 OpenAI 兼容 API 的 LLM 实现，支持多 Provider"""
+
+    def __init__(
+        self,
+        model: str,
+        api_key: str,
+        base_url: str = "https://api.openai.com/v1",
+        max_tokens: int = 8192,
+        temperature: float = 0.1,
+        top_p: float = 1.0,
+        default_stream_mode: bool = False,
+        max_context_tokens: int = 128000,
+        providers: Optional[dict] = None,
+        default_provider: Optional[str] = None,
+    ):
+        self.model = model
+        self._api_key = api_key
+        self._base_url = base_url
+        self.max_tokens = max_tokens
+        self.temperature = temperature
+        self.top_p = top_p
+        self.default_stream_mode = default_stream_mode
+        self.max_context_tokens = max_context_tokens
+
+        # 多 Provider 支持
+        self._providers: Dict[str, ProviderConfig] = {}
+        self._default_provider = default_provider
+        if providers:
+            for name, cfg in providers.items():
+                self._providers[name] = ProviderConfig(
+                    name=name,
+                    url=cfg.get("url", ""),
+                    api_key=cfg.get("api_key", ""),
+                    models=cfg.get("models", []),
                 )
-            
-            logger.info(f"Saved memory for repo '{repo_name}' to {memory_file}")
-            return True
-        
-        except Exception as e:
-            logger.error(f"Failed to save memory for '{repo_name}': {e}")
-            return False
-    
-    def save_all(self) -> Dict[str, bool]:
-        """
-        保存所有记忆到磁盘
-        
-        Returns:
-            每个repo的保存结果
-        """
-        results = {}
-        for repo_name in self.memories:
-            results[repo_name] = self.save_memory(repo_name)
-        
-        logger.info(f"Saved {sum(results.values())} / {len(results)} memories")
-        return results
-    
-    def list_memories(self) -> Dict[str, Dict[str, Any]]:
-        """
-        列出所有记忆的摘要
-        
-        Returns:
-            {repo_name: {last_updated, content_length, ...}}
-        """
-        summaries = {}
-        for repo_name, memory in self.memories.items():
-            summaries[repo_name] = {
-                "last_updated": memory.last_updated,
-                "content_length": len(memory.content),
-                "has_content": bool(memory.content)
+
+        self.client = AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+        )
+        logger.info(f"OpenAILLM initialized: model={model}, base_url={base_url}")
+
+    @property
+    def available_models(self) -> List[str]:
+        """列出所有可用的模型（包括所有 Provider 的模型）"""
+        models = [self.model]
+        for prov in self._providers.values():
+            for m in prov.models:
+                full_name = f"{prov.name}/{m}"
+                if full_name not in models:
+                    models.append(full_name)
+        return models
+
+    def switch_model(self, model_name: str) -> None:
+        """切换模型（支持 provider/model 格式）"""
+        if "/" in model_name:
+            provider_name, model_id = model_name.split("/", 1)
+            if provider_name in self._providers:
+                prov = self._providers[provider_name]
+                self.model = model_id
+                if prov.url:
+                    self._base_url = prov.url
+                if prov.api_key:
+                    self._api_key = prov.api_key
+                # 重建 client
+                self.client = AsyncOpenAI(
+                    api_key=self._api_key,
+                    base_url=self._base_url,
+                )
+                logger.info(f"Switched to provider '{provider_name}', model '{model_id}'")
+            else:
+                raise ValueError(f"Provider '{provider_name}' not found")
+        else:
+            self.model = model_name
+            logger.info(f"Switched to model '{model_name}'")
+
+    def switch_provider(self, provider_name: str) -> None:
+        """切换到指定 Provider（使用其第一个模型）"""
+        if provider_name not in self._providers:
+            raise ValueError(f"Provider '{provider_name}' not found")
+        prov = self._providers[provider_name]
+        if prov.models:
+            self.model = prov.models[0]
+        if prov.url:
+            self._base_url = prov.url
+        if prov.api_key:
+            self._api_key = prov.api_key
+        self.client = AsyncOpenAI(
+            api_key=self._api_key,
+            base_url=self._base_url,
+        )
+        self._default_provider = provider_name
+        logger.info(f"Switched to provider '{provider_name}', model '{self.model}'")
+
+    def _build_messages(self, llm_request: LLMRequest) -> list[dict]:
+        """将内部消息格式转换为 OpenAI API 格式"""
+        openai_messages = []
+        for msg in llm_request.messages:
+            if msg.type == "SystemMessage":
+                openai_messages.append({
+                    "role": "system",
+                    "content": msg.content,
+                })
+            elif msg.type == "UserMessage":
+                openai_messages.append({
+                    "role": "user",
+                    "content": msg.content,
+                })
+            elif msg.type == "AssistantMessage":
+                assistant_msg: dict = {"role": "assistant"}
+                if msg.content:
+                    assistant_msg["content"] = msg.content
+                if msg.reason_content:
+                    assistant_msg["reasoning_content"] = msg.reason_content
+                if msg.tool_calls:
+                    assistant_msg["tool_calls"] = [
+                        {
+                            "id": tc.tool_call_id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.tool_call_name,
+                                "arguments": (
+                                    tc.tool_call_arguments
+                                    if isinstance(tc.tool_call_arguments, str)
+                                    else json.dumps(tc.tool_call_arguments, ensure_ascii=False)
+                                ),
+                            },
+                        }
+                        for tc in msg.tool_calls
+                    ]
+                openai_messages.append(assistant_msg)
+            elif msg.type == "ToolResultMessage":
+                openai_messages.append({
+                    "role": "tool",
+                    "tool_call_id": msg.tool_call_id,
+                    "content": msg.content,
+                })
+        return openai_messages
+
+    def _build_tools(self, llm_request: LLMRequest) -> list[dict] | object:
+        """将工具 Schema 转换为 OpenAI API 的 tools 格式"""
+        if not llm_request.tools:
+            return NOT_GIVEN
+
+        tools = []
+        for tool in llm_request.tools:
+            if isinstance(tool, Tool):
+                schema = tool.schema
+            elif isinstance(tool, ToolSchema):
+                schema = tool
+            else:
+                continue
+
+            tool_def = {
+                "type": "function",
+                "function": {
+                    "name": schema.name,
+                    "description": schema.description or "",
+                    "parameters": (
+                        schema.parameters.model_dump(exclude_none=True)
+                        if schema.parameters
+                        else {"type": "object", "properties": {}}
+                    ),
+                },
             }
-        return summaries
-    
-    def get_all_contents(self) -> str:
-        """
-        获取所有repo的记忆内容（格式化为字符串）
-        
-        用于在system prompt中展示
-        """
-        if not self.memories:
-            return "[No memories available]"
-        
-        parts = []
-        for repo_name in sorted(self.memories.keys()):
-            memory = self.memories[repo_name]
-            parts.append(f"## {repo_name}\n{memory.get_content()}")
-        
-        return "\n\n".join(parts)
-    
-    def delete_memory(self, repo_name: str) -> Dict[str, Any]:
-        """
-        删除指定repo的记忆
-        
-        Args:
-            repo_name: repo名称
-        
-        Returns:
-            操作结果
-        """
-        # 从内存删除
-        if repo_name in self.memories:
-            del self.memories[repo_name]
-        
-        # 从磁盘删除
-        memory_file = self.memory_dir / f"{repo_name}.json"
-        if memory_file.exists():
-            try:
-                memory_file.unlink()
-                logger.info(f"Deleted memory file for '{repo_name}'")
-                return {
-                    "status": "success",
-                    "message": f"Memory for '{repo_name}' deleted"
-                }
-            except Exception as e:
-                logger.error(f"Failed to delete memory file: {e}")
-                return {
-                    "status": "error",
-                    "message": str(e)
-                }
-        
-        return {
-            "status": "success",
-            "message": f"No memory found for '{repo_name}'"
+            if schema.strict:
+                tool_def["function"]["strict"] = True
+                params = tool_def["function"]["parameters"]
+                params.setdefault("additionalProperties", False)
+            tools.append(tool_def)
+
+        return tools if tools else NOT_GIVEN
+
+    def _parse_response(self, completion: ChatCompletion) -> LLMResponse:
+        """解析 OpenAI ChatCompletion 响应为内部格式"""
+        choice: Choice = completion.choices[0]
+        message = choice.message
+
+        # 解析 tool_calls
+        tool_calls = None
+        if message.tool_calls:
+            tool_calls = []
+            for tc in message.tool_calls:
+                args = tc.function.arguments
+                try:
+                    args_dict = json.loads(args)
+                except (json.JSONDecodeError, TypeError):
+                    args_dict = args
+                tool_calls.append(ToolRequest(
+                    tool_call_id=tc.id,
+                    tool_call_name=tc.function.name,
+                    tool_call_arguments=args_dict,
+                ))
+
+        # 解析 finish_reason
+        finish_reason_map = {
+            "stop": "stop",
+            "length": "length",
+            "tool_calls": "tool_calls",
+            "content_filter": "content_filter",
+        }
+        finish_reason = finish_reason_map.get(
+            choice.finish_reason, "unknown"
+        )
+
+        # 构建 AssistantMessage
+        assistant_message = AssistantMessage(
+            content=message.content or "",
+            tool_calls=tool_calls,
+        )
+
+        # 构建 usage
+        prompt_tokens = 0
+        completion_tokens = 0
+        if completion.usage:
+            prompt_tokens = completion.usage.prompt_tokens or 0
+            completion_tokens = completion.usage.completion_tokens or 0
+
+        return LLMResponse(
+            response_message=assistant_message,
+            finish_reason=finish_reason,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+
+    async def chat(self, llm_request: LLMRequest, **kwargs: Any) -> LLMResponse:
+        """非流式调用"""
+        openai_messages = self._build_messages(llm_request)
+        tools = self._build_tools(llm_request)
+
+        request_params: dict = {
+            "model": kwargs.pop("model", self.model),
+            "messages": openai_messages,
+            "temperature": kwargs.pop("temperature", llm_request.temperature),
+            "top_p": kwargs.pop("top_p", llm_request.top_p),
+            "max_tokens": kwargs.pop("max_tokens", llm_request.max_tokens or self.max_tokens),
         }
 
+        if tools is not NOT_GIVEN:
+            request_params["tools"] = tools
+            request_params["tool_choice"] = llm_request.tool_choice
 
-# ============ 工具函数 ============
+        if llm_request.structured_output:
+            request_params["response_format"] = {"type": "json_object"}
 
-def create_update_memory_func(memory: RepoMemory):
-    """创建update_memory函数（用于FunctionTool）"""
-    def update_memory(content: str) -> Dict[str, Any]:
-        """
-        Update the long-term memory/notes for this repository.
-        
-        Use this to record important information about:
-        - Code structure and architecture
-        - Key files and their purposes
-        - Patterns and conventions
-        - Tasks completed
-        - Known issues or TODOs
-        - Learnings from this session
-        
-        Args:
-            content: New memory content (will replace existing content)
-        
-        Returns:
-            Status of the operation
-        """
-        return memory.update(content)
-    
-    return update_memory
+        request_params.update(kwargs)
 
+        logger.debug(f"Sending chat request: model={request_params.get('model')}, "
+                      f"messages={len(openai_messages)}, tools={len(tools) if isinstance(tools, list) else 0}")
 
-def create_append_memory_func(memory: RepoMemory):
-    """创建append_memory函数（用于FunctionTool）"""
-    def append_memory(content: str) -> Dict[str, Any]:
-        """
-        Append additional content to the repository memory.
-        
-        Use this to add new information without replacing existing notes.
-        
-        Args:
-            content: Content to append
-        
-        Returns:
-            Status of the operation
-        """
-        return memory.append(content)
-    
-    return append_memory
+        completion: ChatCompletion = await self.client.chat.completions.create(
+            **request_params
+        )
+
+        response = self._parse_response(completion)
+        logger.debug(f"Chat response: finish_reason={response.finish_reason}, "
+                      f"has_tool_calls={response.tool_calls is not None}, "
+                      f"content_len={len(response.content or '')}")
+        return response
+
+    async def stream_chat(
+        self, llm_request: LLMRequest, **kwargs: Any
+    ) -> AsyncGenerator[LLMResponse, None]:
+        """流式调用，逐步 yield 内容块"""
+        openai_messages = self._build_messages(llm_request)
+        tools = self._build_tools(llm_request)
+
+        request_params: dict = {
+            "model": kwargs.pop("model", self.model),
+            "messages": openai_messages,
+            "temperature": kwargs.pop("temperature", llm_request.temperature),
+            "top_p": kwargs.pop("top_p", llm_request.top_p),
+            "max_tokens": kwargs.pop("max_tokens", llm_request.max_tokens or self.max_tokens),
+            "stream": True,
+        }
+
+        if tools is not NOT_GIVEN:
+            request_params["tools"] = tools
+            request_params["tool_choice"] = llm_request.tool_choice
+
+        request_params.update(kwargs)
+
+        # 流式累积状态
+        content_buffer = ""
+        reasoning_buffer = ""
+        tool_calls_map: dict[int, dict] = {}  # index -> {id, name, arguments}
+        finish_reason = "unknown"
+
+        stream = await self.client.chat.completions.create(**request_params)
+
+        async for chunk in stream:
+            if not chunk.choices:
+                continue
+
+            delta = chunk.choices[0].delta
+
+            # 累积内容
+            if delta.content:
+                content_buffer += delta.content
+            if hasattr(delta, "reasoning_content") and delta.reasoning_content:
+                reasoning_buffer += delta.reasoning_content
+
+            # 累积 tool_calls
+            if delta.tool_calls:
+                for tc_delta in delta.tool_calls:
+                    idx = tc_delta.index
+                    if idx not in tool_calls_map:
+                        tool_calls_map[idx] = {
+                            "id": tc_delta.id or "",
+                            "name": "",
+                            "arguments": "",
+                        }
+                    if tc_delta.id:
+                        tool_calls_map[idx]["id"] = tc_delta.id
+                    if tc_delta.function:
+                        if tc_delta.function.name:
+                            tool_calls_map[idx]["name"] = tc_delta.function.name
+                        if tc_delta.function.arguments:
+                            tool_calls_map[idx]["arguments"] += tc_delta.function.arguments
+
+            # 处理 finish_reason
+            if chunk.choices[0].finish_reason:
+                finish_reason_map = {
+                    "stop": "stop",
+                    "length": "length",
+                    "tool_calls": "tool_calls",
+                    "content_filter": "content_filter",
+                }
+                finish_reason = finish_reason_map.get(
+                    chunk.choices[0].finish_reason, "unknown"
+                )
+
+        # 构建最终 tool_calls
+        final_tool_calls = None
+        if tool_calls_map:
+            final_tool_calls = []
+            for idx in sorted(tool_calls_map.keys()):
+                tc_data = tool_calls_map[idx]
+                args = tc_data["arguments"]
+                try:
+                    args_dict = json.loads(args)
+                except (json.JSONDecodeError, TypeError):
+                    args_dict = args
+                final_tool_calls.append(ToolRequest(
+                    tool_call_id=tc_data["id"],
+                    tool_call_name=tc_data["name"],
+                    tool_call_arguments=args_dict,
+                ))
+
+        assistant_message = AssistantMessage(
+            content=content_buffer,
+            reason_content=reasoning_buffer if reasoning_buffer else None,
+            tool_calls=final_tool_calls,
+        )
+
+        yield LLMResponse(
+            response_message=assistant_message,
+            finish_reason=finish_reason,
+        )
+
+    def estimate_tokens(self, messages: list) -> int:
+        """简单估算 token 数量（基于字符数）"""
+        total_chars = 0
+        for msg in messages:
+            if hasattr(msg, "content") and msg.content:
+                total_chars += len(msg.content)
+            if hasattr(msg, "tool_calls") and msg.tool_calls:
+                for tc in msg.tool_calls:
+                    total_chars += len(json.dumps(tc.tool_call_arguments, ensure_ascii=False))
+        # 粗略估计：1 token ≈ 1.5 中文字符 ≈ 4 英文字符
+        return int(total_chars / 2.5)

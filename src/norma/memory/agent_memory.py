@@ -43,9 +43,18 @@ class AgentMemory:
         message_list : list[LLMMessage] | None ,
         save_toolmessage_num : int = 50 ,
         ) -> None:
-        
+
         self.history_message = message_list  if message_list is not None else []
         self.save_toolmessage_num = save_toolmessage_num
+
+    # ``_messages`` 是 history_message 的别名，便于 agent / cli 直接读写
+    @property
+    def _messages(self) -> list[LLMMessage]:
+        return self.history_message
+
+    @_messages.setter
+    def _messages(self, value: list[LLMMessage]) -> None:
+        self.history_message = value
     
 
 

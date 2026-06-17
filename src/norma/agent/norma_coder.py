@@ -87,6 +87,7 @@ from norma.reminder import (
     ReminderRegistry,
 )
 from norma.skill import SkillRegistry
+from norma.session import SessionManager
 
 
 logger = logging.getLogger(__name__)
@@ -126,6 +127,8 @@ class NormaCoder(BaseAgent):
         reminder_registry: Optional[ReminderRegistry] = None,
         skill_registry: Optional[SkillRegistry] = None,
         enable_skill: bool = True,
+        # session
+        session_manager: Optional[SessionManager] = None,
         # compaction
         compact_threshold: float = 0.75,
     ):
@@ -148,6 +151,9 @@ class NormaCoder(BaseAgent):
         self.reminder_registry = reminder_registry or ReminderRegistry()
         # ---- skill ----
         self.skill_registry = skill_registry or SkillRegistry()
+
+        # ---- session ----
+        self.session_manager = session_manager
 
         # ---- 工具 ----
         default_tools: List[Tool] = [
@@ -229,6 +235,7 @@ class NormaCoder(BaseAgent):
             yield input_event
 
             await self.memory.push_messages([UserMessage(content=query)])
+            self._session_log_user(query)
 
             # ---- reminder: user-input 之后 ----
             user_reminder = self.reminder_registry.collect(
@@ -277,6 +284,7 @@ class NormaCoder(BaseAgent):
 
                 # 将 assistant 消息（可能同时包含文本和 tool_calls）推入记忆
                 await self.memory.push_messages([llm_response.response_message])
+                self._session_log_assistant(llm_response.response_message)
 
                 # ---- 以 finish_reason 决定是否继续 ----
                 finish_reason = llm_response.finish_reason
@@ -338,6 +346,8 @@ class NormaCoder(BaseAgent):
                         for r in tool_results
                     ]
                     await self.memory.push_messages(tool_messages)
+                    for tm in tool_messages:
+                        self._session_log_tool(tm)
 
                     # ---- reminder: tool-result 之后 ----
                     tool_reminder = self.reminder_registry.collect(
@@ -612,3 +622,121 @@ class NormaCoder(BaseAgent):
             ))
         except Exception as exc:
             logger.warning(f"messagebus publish error: {exc}")
+
+    # =====================================================
+    # Session 持久化
+    # =====================================================
+    def _session_log_user(self, content: str) -> None:
+        if self.session_manager is None:
+            return
+        try:
+            self.session_manager.append({
+                "type": "user",
+                "content": content,
+                "conversation_id": self.conversation_id,
+            })
+        except Exception as exc:
+            logger.debug(f"session log user error: {exc}")
+
+    def _session_log_assistant(self, msg: AssistantMessage) -> None:
+        if self.session_manager is None or msg is None:
+            return
+        try:
+            tool_calls = None
+            if msg.tool_calls:
+                tool_calls = [
+                    {
+                        "tool_call_id": tc.tool_call_id,
+                        "tool_call_name": tc.tool_call_name,
+                        "tool_call_arguments": tc.tool_call_arguments,
+                    } for tc in msg.tool_calls
+                ]
+            self.session_manager.append({
+                "type": "assistant",
+                "content": msg.content or "",
+                "reason_content": msg.reason_content,
+                "tool_calls": tool_calls,
+                "conversation_id": self.conversation_id,
+            })
+        except Exception as exc:
+            logger.debug(f"session log assistant error: {exc}")
+
+    def _session_log_tool(self, msg: ToolMessage) -> None:
+        if self.session_manager is None:
+            return
+        try:
+            self.session_manager.append({
+                "type": "tool",
+                "tool_call_id": msg.tool_result.tool_call_id,
+                "tool_name": msg.tool_result.tool_call_name,
+                "content": (msg.content or "")[:8000],
+                "is_error": bool(msg.tool_result.is_error),
+                "conversation_id": self.conversation_id,
+            })
+        except Exception as exc:
+            logger.debug(f"session log tool error: {exc}")
+
+    async def restore_from_session(self, session_id: str) -> int:
+        """从 session 文件恢复内存中的消息
+
+        Returns:
+            int: 恢复的消息数量
+        """
+        if self.session_manager is None:
+            return 0
+        entries = self.session_manager.replay_messages(session_id)
+        from norma.core.tool_types import ToolRequest, ToolRequestResult
+        restored = 0
+        # 保留原 system message
+        sys_msg = None
+        if self.memory._messages and isinstance(
+            self.memory._messages[0], SystemMessage
+        ):
+            sys_msg = self.memory._messages[0]
+        new_msgs: List = []
+        if sys_msg:
+            new_msgs.append(sys_msg)
+        for e in entries:
+            t = e.get("type")
+            if t == "user":
+                new_msgs.append(UserMessage(content=e.get("content", "")))
+                restored += 1
+            elif t == "assistant":
+                tcs = None
+                raw = e.get("tool_calls")
+                if raw:
+                    tcs = [
+                        ToolRequest(
+                            tool_call_id=tc.get("tool_call_id") or str(uuid.uuid4()),
+                            tool_call_name=tc.get("tool_call_name", ""),
+                            tool_call_arguments=tc.get("tool_call_arguments") or {},
+                        ) for tc in raw
+                    ]
+                new_msgs.append(AssistantMessage(
+                    response={},
+                    content=e.get("content", "") or "",
+                    reason_content=e.get("reason_content"),
+                    tool_calls=tcs,
+                ))
+                restored += 1
+            elif t == "tool":
+                req = ToolRequest(
+                    tool_call_id=e.get("tool_call_id", ""),
+                    tool_call_name=e.get("tool_name", ""),
+                    tool_call_arguments={},
+                )
+                result = ToolRequestResult(
+                    request=req,
+                    result=e.get("content", ""),
+                    content=e.get("content", "") or "",
+                    is_error=bool(e.get("is_error", False)),
+                    execution_times=0.0,
+                )
+                new_msgs.append(ToolMessage(
+                    tool_result=result,
+                    content=e.get("content", "") or "",
+                ))
+                restored += 1
+        self.memory._messages = new_msgs
+        return restored
+

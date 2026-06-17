@@ -42,16 +42,18 @@ from norma.reminder import ReminderRegistry
 from norma.reminder.task_reminder import TaskNudgeReminder
 from norma.skill import SkillRegistry
 from norma.mcp import MCPManager
+from norma.session import SessionManager
 
 
 class NormaCLI:
     """Norma AI Agent 命令行界面的主控制器"""
 
-    def __init__(self):
+    def __init__(self, resume_session: Optional[str] = None):
         self.console = Console()
         self.agent: Optional[BaseAgent] = None
         self.llm: Optional[OpenAILLM] = None
         self.config = self.load_config()
+        self.resume_session = resume_session
         self._setup_proxy()
 
         # ---- messagebus / 权限 / hook ----
@@ -78,6 +80,9 @@ class NormaCLI:
         # ---- MCP ----
         self.mcp_manager = MCPManager()
         self.mcp_manager.load_config(self.config)
+
+        # ---- session ----
+        self.session_manager = SessionManager(cwd=os.getcwd())
 
         self._init_agent()
 
@@ -168,6 +173,18 @@ class NormaCLI:
     def _init_agent(self):
         try:
             self.llm = self._resolve_llm()
+
+            # 创建或恢复 session
+            if self.resume_session:
+                record = self.session_manager.load(self.resume_session)
+                if record is None:
+                    self.console.print(
+                        f"[yellow]Session {self.resume_session} 不存在，创建新 session[/yellow]"
+                    )
+                    record = self.session_manager.create()
+            else:
+                record = self.session_manager.create()
+
             self.agent = NormaCoder(
                 name="normacoder",
                 llm=self.llm,
@@ -178,10 +195,17 @@ class NormaCLI:
                 user_input_manager=self.user_input_manager,
                 reminder_registry=self.reminder_registry,
                 skill_registry=self.skill_registry,
+                session_manager=self.session_manager,
+                conversation_id=record.session_id,
             )
+
+            # 如果是 resume 则在 async run() 时恢复消息
+            self._pending_restore = self.resume_session if self.resume_session else None
+
             self.console.print(
                 f"[green]✓ Agent初始化成功 "
-                f"(permission={self.permission_checker.config.mode.value})[/green]"
+                f"(permission={self.permission_checker.config.mode.value}, "
+                f"session={record.session_id[:8]})[/green]"
             )
         except Exception as e:
             self.console.print(f"[red]Agent初始化失败: {e}[/red]")
@@ -192,6 +216,17 @@ class NormaCLI:
     async def run(self):
         await self.message_bus.start()
         try:
+            # 如有待恢复的 session，先把消息载入 memory
+            if getattr(self, "_pending_restore", None):
+                try:
+                    n = await self.agent.restore_from_session(self._pending_restore)
+                    self.console.print(
+                        f"[green]✓ 已恢复 session {self._pending_restore[:8]}，"
+                        f"加载 {n} 条历史消息[/green]"
+                    )
+                except Exception as e:
+                    self.console.print(f"[yellow]恢复 session 失败: {e}[/yellow]")
+
             # 连接 MCP 服务器
             if self.mcp_manager.clients:
                 self.console.print("[dim]正在连接 MCP 服务器...[/dim]")
@@ -210,6 +245,10 @@ class NormaCLI:
         finally:
             try:
                 await self.hook_manager.dispatch(HookEvent.SESSION_END)
+            except Exception:
+                pass
+            try:
+                self.session_manager.close()
             except Exception:
                 pass
             await self.mcp_manager.disconnect_all()
@@ -232,10 +271,14 @@ def main():
     parser.add_argument(
         '--config', type=str, help='配置文件路径'
     )
-    parser.parse_args()
+    parser.add_argument(
+        '--resume', '-r', type=str, default=None,
+        help='恢复指定 session_id 的会话'
+    )
+    args = parser.parse_args()
 
     try:
-        cli = NormaCLI()
+        cli = NormaCLI(resume_session=args.resume)
         asyncio.run(cli.run())
     except KeyboardInterrupt:
         print("\n\n程序已退出")

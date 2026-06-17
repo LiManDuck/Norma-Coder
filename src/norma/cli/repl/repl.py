@@ -16,6 +16,7 @@ from typing import Optional
 from prompt_toolkit import PromptSession, print_formatted_text
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.completion import WordCompleter
+from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console
 
 from norma.core.agent_types import (
@@ -35,6 +36,7 @@ from norma.cli.command import (
     register_builtin_commands,
 )
 from norma.cli.ui.render import AgentEventRenderer
+from norma.permission import PermissionMode
 
 
 class NormaREPL:
@@ -61,9 +63,59 @@ class NormaREPL:
         # 配置会话
         history_dir = Path.home() / ".norma"
         history_dir.mkdir(exist_ok=True)
+
+        # ---- shift+tab 切换权限模式 ----
+        kb = KeyBindings()
+
+        @kb.add("s-tab")
+        def _cycle_mode(event):
+            new_mode = self._cycle_permission_mode()
+            event.app.invalidate()
+            print_formatted_text(
+                HTML(
+                    f"<style fg='ansicyan'>⇄ 执行模式已切换: "
+                    f"<b>{new_mode}</b></style>"
+                )
+            )
+
+        self.key_bindings = kb
+
         self.session = PromptSession(
             completer=self.completer,
             enable_history_search=True,
+            key_bindings=kb,
+            bottom_toolbar=self._render_toolbar,
+        )
+
+    # ---------- 模式切换 / 工具栏 ----------
+
+    _MODE_CYCLE = [PermissionMode.PLAN, PermissionMode.EDIT, PermissionMode.AUTO]
+
+    def _cycle_permission_mode(self) -> str:
+        """将权限模式按 plan → edit → auto 循环切换"""
+        checker = getattr(self.agent, "permission_checker", None)
+        if checker is None or checker.config is None:
+            return "n/a"
+        current = checker.config.mode
+        try:
+            idx = self._MODE_CYCLE.index(current)
+        except ValueError:
+            idx = -1
+        new_mode = self._MODE_CYCLE[(idx + 1) % len(self._MODE_CYCLE)]
+        checker.config.mode = new_mode
+        return new_mode.value
+
+    def _render_toolbar(self):
+        checker = getattr(self.agent, "permission_checker", None)
+        mode = checker.config.mode.value if checker and checker.config else "n/a"
+        model = getattr(self.agent.llm, "model", "?")
+        sm = getattr(self.agent, "session_manager", None)
+        sid = sm.current.session_id[:8] if sm and sm.current else "-"
+        return HTML(
+            f" <b fg='ansicyan'>mode</b>={mode}  "
+            f"<b fg='ansicyan'>model</b>={model}  "
+            f"<b fg='ansicyan'>session</b>={sid}  "
+            f"<style fg='#888888'>(Shift+Tab 切换模式)</style>"
         )
 
     def show_banner(self):

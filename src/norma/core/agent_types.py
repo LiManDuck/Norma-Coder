@@ -45,6 +45,16 @@ class AgentResponseEvent(AgentEvent):
 class AgentThinkEvent(AgentEvent):
     reason_content: str
 
+
+class AgentTextDeltaEvent(AgentEvent):
+    """流式文本增量：assistant 正在输出的文本片段"""
+    delta: str
+
+
+class AgentThinkDeltaEvent(AgentEvent):
+    """流式推理增量：模型思考过程的增量片段"""
+    delta: str
+
 class AgentLLMRequestEvent(AgentEvent):
     request: LLMRequest
 

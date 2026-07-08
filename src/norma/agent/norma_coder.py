@@ -32,7 +32,9 @@ from norma.core.agent_types import (
     AgentResponse,
     AgentLLMResponseEvent,
     AgentToolRequestEvent,
-    AgentToolRequestAnswerEvent
+    AgentToolRequestAnswerEvent,
+    AgentTextDeltaEvent,
+    AgentThinkDeltaEvent,
 )
 from norma.core.llm_types import (
     BaseLLM,
@@ -271,7 +273,38 @@ class NormaCoder(BaseAgent):
                 await self._publish(llm_request_event)
                 yield llm_request_event
 
-                llm_response: LLMResponse = await self.llm.chat(llm_request)
+                # ---- 流式调用：逐增量 yield delta 事件，捕获最终响应 ----
+                llm_response: Optional[LLMResponse] = None
+                async for chunk in self.llm(llm_request):
+                    if chunk.response_message is None:
+                        # 增量 chunk
+                        if chunk.stream_content:
+                            delta_event = AgentTextDeltaEvent(
+                                agent_name=self.name,
+                                delta=chunk.stream_content,
+                                create_time=datetime.now().isoformat(),
+                            )
+                            events.append(delta_event)
+                            await self._publish(delta_event)
+                            yield delta_event
+                        if chunk.stream_reasoning:
+                            think_event = AgentThinkDeltaEvent(
+                                agent_name=self.name,
+                                delta=chunk.stream_reasoning,
+                                create_time=datetime.now().isoformat(),
+                            )
+                            events.append(think_event)
+                            await self._publish(think_event)
+                            yield think_event
+                    else:
+                        llm_response = chunk
+
+                if llm_response is None:
+                    # 兜底：流式未产出最终响应，构造空响应
+                    llm_response = LLMResponse(
+                        response_message=AssistantMessage(content="", tool_calls=None),
+                        finish_reason="stop",
+                    )
 
                 llm_response_event = AgentLLMResponseEvent(
                     agent_name=self.name,

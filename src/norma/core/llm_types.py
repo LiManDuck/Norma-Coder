@@ -88,8 +88,8 @@ class UserMessage(BaseModel):
 class AssistantMessage(BaseModel):
     """助手消息"""
     role : str = 'assistant'
-    response: Any # 模型返回的原生的结果,包含若干字段
-    content: str 
+    response: Any = None # 模型返回的原生的结果,包含若干字段（可选）
+    content: str
     reason_content: str | None = None
     tool_calls : List[ToolRequest] | None = None
     type: Literal["AssistantMessage"] = "AssistantMessage"
@@ -169,10 +169,17 @@ class RequestUsage(BaseModel):
     completion_tokens: int
 
 class LLMResponse(BaseModel):
-    """LLM响应结果"""
+    """LLM响应结果
+
+    流式语义：
+    - 增量 chunk：``response_message=None``、``finish_reason="unknown"``，
+      ``stream_content`` / ``stream_reasoning`` 携带本 chunk 的文本/推理增量。
+    - 最终 chunk：``response_message`` 为完整 AssistantMessage，``finish_reason`` 为真实值。
+    """
     response_message : AssistantMessage | None
     finish_reason: FinishReasons
     stream_content : str | None  = None
+    stream_reasoning : str | None = None  # 推理增量（流式 chunk）
 
     @property
     def tool_calls(self,) -> List[ToolRequest] | None:

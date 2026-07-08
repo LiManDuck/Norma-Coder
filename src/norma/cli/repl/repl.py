@@ -29,6 +29,8 @@ from norma.core.agent_types import (
     AgentToolRequestEvent,
     AgentToolRequestAnswerEvent,
     AgentInputEvent,
+    AgentTextDeltaEvent,
+    AgentThinkDeltaEvent,
 )
 from norma.cli.command import (
     CommandRegistry,
@@ -209,6 +211,10 @@ class NormaREPL:
                 if isinstance(event, AgentLLMRequestEvent):
                     continue
                 if isinstance(event, AgentInputEvent):
+                    continue
+                # 流式增量在旧 REPL 中跳过（最终文本由 AgentLLMResponseEvent 显示）；
+                # 真正的逐字流式渲染由 TUI 负责。
+                if isinstance(event, (AgentTextDeltaEvent, AgentThinkDeltaEvent)):
                     continue
 
                 formatted_output = self.agent_render.render_event(

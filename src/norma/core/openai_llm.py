@@ -8,12 +8,11 @@ OpenAI 兼容 API 的 LLM 实现
 import json
 import logging
 from typing import Any, AsyncGenerator, Optional, List, Type, Dict
-
+from pydantic import BaseModel, Field
 from openai import AsyncOpenAI
 from openai._types import NOT_GIVEN
 from openai.types.chat import ChatCompletion, ChatCompletionChunk
 from openai.types.chat.chat_completion import Choice
-from pydantic import BaseModel
 
 from norma.core.llm_types import (
     BaseLLM,
@@ -301,7 +300,12 @@ class OpenAILLM(BaseLLM):
     async def stream_chat(
         self, llm_request: LLMRequest, **kwargs: Any
     ) -> AsyncGenerator[LLMResponse, None]:
-        """流式调用，逐步 yield 内容块"""
+        """流式调用
+
+        逐 chunk yield 增量 ``LLMResponse``（``stream_content`` / ``stream_reasoning``
+        携带增量，``response_message=None``），最后 yield 一个完整的 ``LLMResponse``
+        （含 ``response_message``、``finish_reason``、usage）。
+        """
         openai_messages = self._build_messages(llm_request)
         tools = self._build_tools(llm_request)
 
@@ -318,6 +322,9 @@ class OpenAILLM(BaseLLM):
             request_params["tools"] = tools
             request_params["tool_choice"] = llm_request.tool_choice
 
+        if llm_request.structured_output:
+            request_params["response_format"] = {"type": "json_object"}
+
         request_params.update(kwargs)
 
         # 流式累积状态
@@ -325,28 +332,57 @@ class OpenAILLM(BaseLLM):
         reasoning_buffer = ""
         tool_calls_map: dict[int, dict] = {}  # index -> {id, name, arguments}
         finish_reason = "unknown"
+        prompt_tokens = 0
+        completion_tokens = 0
+
+        finish_reason_map = {
+            "stop": "stop",
+            "length": "length",
+            "tool_calls": "tool_calls",
+            "content_filter": "content_filter",
+        }
 
         stream = await self.client.chat.completions.create(**request_params)
 
         async for chunk in stream:
+            # usage 可能在无 choices 的末尾 chunk 中到达
+            usage = getattr(chunk, "usage", None)
+            if usage:
+                prompt_tokens = usage.prompt_tokens or 0
+                completion_tokens = usage.completion_tokens or 0
+
             if not chunk.choices:
                 continue
 
-            delta = chunk.choices[0].delta
+            choice = chunk.choices[0]
+            delta = choice.delta
 
-            # 累积内容
+            # 文本增量
             if delta.content:
                 content_buffer += delta.content
-            if hasattr(delta, "reasoning_content") and delta.reasoning_content:
-                reasoning_buffer += delta.reasoning_content
+                yield LLMResponse(
+                    response_message=None,
+                    finish_reason="unknown",
+                    stream_content=delta.content,
+                )
 
-            # 累积 tool_calls
+            # 推理增量（兼容 reasoning_content 字段）
+            reasoning = getattr(delta, "reasoning_content", None)
+            if reasoning:
+                reasoning_buffer += reasoning
+                yield LLMResponse(
+                    response_message=None,
+                    finish_reason="unknown",
+                    stream_reasoning=reasoning,
+                )
+
+            # 累积 tool_calls（不对外 yield 增量，最终一次性给出）
             if delta.tool_calls:
                 for tc_delta in delta.tool_calls:
                     idx = tc_delta.index
                     if idx not in tool_calls_map:
                         tool_calls_map[idx] = {
-                            "id": tc_delta.id or "",
+                            "id": "",
                             "name": "",
                             "arguments": "",
                         }
@@ -359,15 +395,9 @@ class OpenAILLM(BaseLLM):
                             tool_calls_map[idx]["arguments"] += tc_delta.function.arguments
 
             # 处理 finish_reason
-            if chunk.choices[0].finish_reason:
-                finish_reason_map = {
-                    "stop": "stop",
-                    "length": "length",
-                    "tool_calls": "tool_calls",
-                    "content_filter": "content_filter",
-                }
+            if choice.finish_reason:
                 finish_reason = finish_reason_map.get(
-                    chunk.choices[0].finish_reason, "unknown"
+                    choice.finish_reason, "unknown"
                 )
 
         # 构建最终 tool_calls
@@ -396,6 +426,8 @@ class OpenAILLM(BaseLLM):
         yield LLMResponse(
             response_message=assistant_message,
             finish_reason=finish_reason,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
 
     def estimate_tokens(self, messages: list) -> int:

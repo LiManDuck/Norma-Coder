@@ -22,6 +22,8 @@ class MessageType(Enum):
     
     # Agent相关
     AGENT_THINK = "agent_think"            # Agent思考
+    AGENT_TEXT_DELTA = "agent_text_delta"  # 流式文本增量
+    AGENT_THINK_DELTA = "agent_think_delta"  # 流式推理增量
     AGENT_TOOL_REQUEST = "agent_tool_req"  # Agent工具请求
     AGENT_TOOL_RESULT = "agent_tool_res"   # 工具执行结果
     AGENT_LLM_REQUEST = "agent_llm_req"    # LLM请求
@@ -258,16 +260,22 @@ class AgentMessageAdapter:
         """将Agent事件转换为消息"""
         from norma.core.agent_types import (
             AgentThinkEvent,
+            AgentTextDeltaEvent,
+            AgentThinkDeltaEvent,
             AgentToolRequestEvent,
             AgentToolRequestAnswerEvent,
             AgentLLMRequestEvent,
             AgentLLMResponseEvent,
             AgentResponse
         )
-        
+
         # 根据事件类型映射消息类型
         if isinstance(event, AgentThinkEvent):
             msg_type = MessageType.AGENT_THINK
+        elif isinstance(event, AgentTextDeltaEvent):
+            msg_type = MessageType.AGENT_TEXT_DELTA
+        elif isinstance(event, AgentThinkDeltaEvent):
+            msg_type = MessageType.AGENT_THINK_DELTA
         elif isinstance(event, AgentToolRequestEvent):
             msg_type = MessageType.AGENT_TOOL_REQUEST
         elif isinstance(event, AgentToolRequestAnswerEvent):

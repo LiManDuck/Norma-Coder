@@ -527,6 +527,9 @@ class NormaCoder(BaseAgent):
             new_messages.append(UserMessage(content=f"<compact-boundary>\n以下是之前对话的摘要：\n{summary}\n</compact-boundary>"))
 
             self.memory._messages = new_messages
+            # 持久化压缩边界到 session：restore_from_session 遇到此标记时丢弃
+            # 边界前的全部重放，改用摘要状态，避免 /resume 重放全量历史而使压缩失效
+            self._session_log_compact_boundary(new_messages[-1].content)
             logger.info(f"Compaction complete: {len(messages)} → {len(new_messages)} messages")
 
         except Exception as e:
@@ -710,6 +713,24 @@ class NormaCoder(BaseAgent):
         except Exception as exc:
             logger.debug(f"session log tool error: {exc}")
 
+    def _session_log_compact_boundary(self, content: str) -> None:
+        """记录压缩边界。
+
+        ``restore_from_session`` 遇到 ``compact_boundary`` 类型的条目时，会丢弃
+        边界之前重放的全部消息，仅保留 system + 摘要，从而恢复压缩后的状态，
+        而不是重放全量历史（否则压缩在 /resume 后失效）。
+        """
+        if self.session_manager is None:
+            return
+        try:
+            self.session_manager.append({
+                "type": "compact_boundary",
+                "content": content,
+                "conversation_id": self.conversation_id,
+            })
+        except Exception as exc:
+            logger.debug(f"session log compact_boundary error: {exc}")
+
     async def restore_from_session(self, session_id: str) -> int:
         """从 session 文件恢复内存中的消息
 
@@ -732,6 +753,13 @@ class NormaCoder(BaseAgent):
             new_msgs.append(sys_msg)
         for e in entries:
             t = e.get("type")
+            if t == "compact_boundary":
+                # 压缩边界：丢弃边界前重放的全部消息，仅保留 system + 摘要，
+                # 之后继续重放压缩后发生的后续轮次（最后的边界生效）。
+                new_msgs = [sys_msg] if sys_msg else []
+                new_msgs.append(UserMessage(content=e.get("content", "")))
+                restored = 1
+                continue
             if t == "user":
                 new_msgs.append(UserMessage(content=e.get("content", "")))
                 restored += 1

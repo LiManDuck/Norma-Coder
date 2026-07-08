@@ -114,4 +114,10 @@ def test_tui_e2e_mocked_llm() -> None:
 
 if __name__ == "__main__":
     import sys
+    # 与 cli.main() 一致：Windows GBK 控制台无法编码 ✓ 等字符，需切到 UTF-8
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     sys.exit(asyncio.run(_amain()))

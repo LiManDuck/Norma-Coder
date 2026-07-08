@@ -12,7 +12,7 @@
 - [x] P3 事件解耦（AgentRunner 桥接 generator->MessageBus；ASK 确认流闭环）
 - [x] P4 TUI 前端（textual app：滚动日志/流式区/状态栏/输入框/确认层/命令）
 - [x] P5 接入与打磨（MCP/skill/command 在 TUI 中可用；流式渲染；模式切换；冒烟通过）
-- [ ] P6 对齐增强（按需：工具并发分区、parent_uuid 链、分层 compaction、系统提示结构化）
+- [ ] P6 对齐增强（按需：~~工具并发分区~~、~~compact_boundary~~、parent_uuid 链、分层 compaction、系统提示结构化）
 
 ## P0 现状盘点与参考研究
 - 通读 src/norma 全量代码，输出架构盘点（见 architecture.md §2）。
@@ -61,7 +61,8 @@
 ## P6 对齐增强（按价值择优）
 - [x] 工具并发分区（只读并发，写串行）：`Tool.is_readonly` 元数据 + `NormaArtifact.execute_tools` 分区，结果按原序返回；Read/Ls/Glob/Grep/TaskGet/TaskList 标记只读。
 - [x] MCP 工具名前缀 `mcp__server__tool`（`MCPTool` 已实现，含 `is_readonly`/`is_destructive`）。
-- [ ] Session parent_uuid 链 + compact_boundary。
+- [x] compact_boundary：`_do_compact` 写入 `compact_boundary` 边界条目到 session jsonl；`restore_from_session` 遇到边界时丢弃边界前重放、仅保留 system+摘要+边界后轮次（回归测试 `test_compact_resume.py` 通过）。
+- [ ] Session parent_uuid 链（分支/fork，可选，价值较低）。
 - [ ] 分层 compaction（微压缩清旧 tool_result）。
 - [ ] 系统提示结构化（list[str] 块 + env + CLAUDE.md）。
 

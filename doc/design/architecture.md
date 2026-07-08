@@ -102,7 +102,7 @@
 | Hook | 子进程，JSON stdin，exit2=block | 子进程 env 注入 → 可补 JSON stdin/exit2 |
 | Skill | name/SKILL.md + inline/fork | 已具备 frontmatter+body + 子agent |
 | MCP | mcp__server__tool 命名 | 当前直连 tool.name → 可加前缀 |
-| Session | jsonl + parent_uuid 链 + compact_boundary | jsonl 无 parent_uuid → 可补链与边界 |
+| Session | jsonl + parent_uuid 链 + compact_boundary | jsonl 已具备 compact_boundary（压缩边界持久化 + restore 跳过边界前重放）；parent_uuid 链可选 |
 | Compaction | 微压缩(清旧tool_result)+自动(window-13k)+反应式(413) | 单层 LLM 摘要 → 可分层 |
 | 系统提示 | list[str] 块 + 动态段注册 + env + CLAUDE.md | 单字符串 → 可结构化 |
 | `<system-reminder>` | 注入 memory/date/skills | reminder 系统已具备 |

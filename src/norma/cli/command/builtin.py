@@ -8,9 +8,6 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from prompt_toolkit.formatted_text import HTML
-from prompt_toolkit import print_formatted_text
-
 from norma.cli.command.registry import CommandRegistry, CommandContext
 
 
@@ -31,14 +28,12 @@ async def cmd_new(ctx: CommandContext) -> None:
             sm.close()
         record = sm.create()
         ctx.agent.conversation_id = record.session_id
-        print_formatted_text(
-            HTML(
-                f"<style fg='ansigreen'>✓ 新对话已开始 "
-                f"(session: {record.session_id[:8]}...)</style>"
-            )
+        ctx.print(
+            f"<style fg='ansigreen'>✓ 新对话已开始 "
+            f"(session: {record.session_id[:8]}...)</style>"
         )
     else:
-        print_formatted_text(HTML("<style fg='ansigreen'>✓ 新对话已开始</style>"))
+        ctx.print("<style fg='ansigreen'>✓ 新对话已开始</style>")
 
 
 async def cmd_help(ctx: CommandContext) -> None:
@@ -53,19 +48,18 @@ async def cmd_help(ctx: CommandContext) -> None:
     if ctx.repl.command_registry.all_commands():
         lines.append("")
     lines.append("<style fg='#888888'>直接输入问题开始对话</style>")
-    print_formatted_text(HTML("\n".join(lines)))
+    ctx.print("\n".join(lines))
 
 
 async def cmd_exit(ctx: CommandContext) -> bool:
     """退出程序"""
-    print_formatted_text(HTML("<style fg='ansigreen'>再见！</style>"))
+    ctx.print("<style fg='ansigreen'>再见！</style>")
     return False
 
 
 async def cmd_clear(ctx: CommandContext) -> None:
     """清空屏幕"""
-    import os
-    os.system('clear' if os.name != 'nt' else 'cls')
+    ctx.clear_screen()
 
 
 async def cmd_model(ctx: CommandContext) -> None:
@@ -79,13 +73,9 @@ async def cmd_model(ctx: CommandContext) -> None:
                 llm.switch_model(model_name)
             else:
                 llm.model = model_name
-            print_formatted_text(
-                HTML(f"<style fg='ansigreen'>✓ 已切换模型到: {model_name}</style>")
-            )
+            ctx.print(f"<style fg='ansigreen'>✓ 已切换模型到: {model_name}</style>")
         except ValueError as e:
-            print_formatted_text(
-                HTML(f"<style fg='ansired'>切换失败: {e}</style>")
-            )
+            ctx.print(f"<style fg='ansired'>切换失败: {e}</style>")
     else:
         # 显示当前模型和所有可用模型
         current_model = getattr(llm, 'model', 'unknown')
@@ -111,17 +101,15 @@ async def cmd_model(ctx: CommandContext) -> None:
             lines.append("")
             lines.append("<style fg='#888888'>使用 /model provider/model 切换模型</style>")
 
-        print_formatted_text(HTML("\n".join(lines)))
+        ctx.print("\n".join(lines))
 
 
 async def cmd_compact(ctx: CommandContext) -> None:
     """手动触发上下文压缩"""
-    print_formatted_text(HTML("<style fg='ansiyellow'>正在压缩上下文...</style>"))
+    ctx.print("<style fg='ansiyellow'>正在压缩上下文...</style>")
     await ctx.agent._do_compact()
     msg_count = len(ctx.agent.memory._messages)
-    print_formatted_text(
-        HTML(f"<style fg='ansigreen'>✓ 压缩完成，当前消息数: {msg_count}</style>")
-    )
+    ctx.print(f"<style fg='ansigreen'>✓ 压缩完成，当前消息数: {msg_count}</style>")
 
 
 async def cmd_status(ctx: CommandContext) -> None:
@@ -144,7 +132,7 @@ async def cmd_status(ctx: CommandContext) -> None:
         lines.append(
             f"  Session 文件: <style fg='#888888'>{sm.current.file_path}</style>"
         )
-    print_formatted_text(HTML("\n".join(lines)))
+    ctx.print("\n".join(lines))
 
 
 async def cmd_resume(ctx: CommandContext) -> None:
@@ -158,18 +146,14 @@ async def cmd_resume(ctx: CommandContext) -> None:
     agent = ctx.agent
     sm = getattr(agent, "session_manager", None)
     if sm is None:
-        print_formatted_text(
-            HTML("<style fg='ansired'>当前未启用 Session 系统</style>")
-        )
+        ctx.print("<style fg='ansired'>当前未启用 Session 系统</style>")
         return
 
     metas = sm.list_sessions(limit=20)
 
     if not ctx.args:
         if not metas:
-            print_formatted_text(
-                HTML("<style fg='#888888'>暂无历史会话</style>")
-            )
+            ctx.print("<style fg='#888888'>暂无历史会话</style>")
             return
         lines = ["<b>历史会话 (按更新时间倒序):</b>", ""]
         for i, m in enumerate(metas, 1):
@@ -189,7 +173,7 @@ async def cmd_resume(ctx: CommandContext) -> None:
             "<style fg='#888888'>使用 /resume &lt;序号&gt; 或 "
             "/resume &lt;session_id&gt; 恢复</style>"
         )
-        print_formatted_text(HTML("\n".join(lines)))
+        ctx.print("\n".join(lines))
         return
 
     target = ctx.args.strip()
@@ -204,9 +188,7 @@ async def cmd_resume(ctx: CommandContext) -> None:
                 chosen = m.session_id
                 break
     if chosen is None:
-        print_formatted_text(
-            HTML(f"<style fg='ansired'>未找到匹配的会话: {target}</style>")
-        )
+        ctx.print(f"<style fg='ansired'>未找到匹配的会话: {target}</style>")
         return
 
     # 关闭旧会话，打开目标会话
@@ -214,17 +196,13 @@ async def cmd_resume(ctx: CommandContext) -> None:
         sm.close()
     record = sm.load(chosen)
     if record is None:
-        print_formatted_text(
-            HTML(f"<style fg='ansired'>会话文件不存在: {chosen}</style>")
-        )
+        ctx.print(f"<style fg='ansired'>会话文件不存在: {chosen}</style>")
         return
     agent.conversation_id = chosen
     restored = await agent.restore_from_session(chosen)
-    print_formatted_text(
-        HTML(
-            f"<style fg='ansigreen'>✓ 已恢复会话 {chosen[:8]}...，"
-            f"加载 {restored} 条历史消息</style>"
-        )
+    ctx.print(
+        f"<style fg='ansigreen'>✓ 已恢复会话 {chosen[:8]}...，"
+        f"加载 {restored} 条历史消息</style>"
     )
 
 
@@ -232,9 +210,7 @@ async def cmd_session(ctx: CommandContext) -> None:
     """显示当前 session 信息"""
     sm = getattr(ctx.agent, "session_manager", None)
     if sm is None or sm.current is None:
-        print_formatted_text(
-            HTML("<style fg='#888888'>当前未启用或未创建 session</style>")
-        )
+        ctx.print("<style fg='#888888'>当前未启用或未创建 session</style>")
         return
     cur = sm.current
     lines = [
@@ -246,7 +222,7 @@ async def cmd_session(ctx: CommandContext) -> None:
         f"  更新时间: {cur.meta.updated_at}",
         f"  消息数: {cur.meta.message_count}",
     ]
-    print_formatted_text(HTML("\n".join(lines)))
+    ctx.print("\n".join(lines))
 
 
 def register_builtin_commands(registry: CommandRegistry) -> None:
@@ -260,4 +236,3 @@ def register_builtin_commands(registry: CommandRegistry) -> None:
     registry.register("status", cmd_status, description="显示当前状态", aliases=[])
     registry.register("resume", cmd_resume, description="列出/恢复历史会话", aliases=[])
     registry.register("session", cmd_session, description="显示当前 session 信息", aliases=[])
-

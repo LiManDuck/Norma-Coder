@@ -231,6 +231,14 @@ class UserInputManager:
         finally:
             # 清理
             self._confirmation_futures.pop(request_id, None)
+
+    async def respond_confirmation(self, request_id: str, confirmed: bool) -> None:
+        """前端调用：响应对应 request_id 的确认请求（True=允许，False=拒绝）。"""
+        msg_type = MessageType.USER_CONFIRM if confirmed else MessageType.USER_REJECT
+        await self.message_bus.publish(Message(
+            msg_type=msg_type,
+            payload={"request_id": request_id},
+        ))
     
     async def _handle_confirmation(self, message: Message):
         """处理用户确认"""

@@ -213,7 +213,7 @@ class NormaCLI:
 
     # ----------------------- 运行 -----------------------
 
-    async def run(self):
+    async def run(self, use_repl: bool = False):
         await self.message_bus.start()
         try:
             # 如有待恢复的 session，先把消息载入 memory
@@ -240,8 +240,22 @@ class NormaCLI:
                     )
 
             await self.hook_manager.dispatch(HookEvent.SESSION_BEGIN)
-            repl = NormaREPL(agent=self.agent, cwd=os.getcwd())
-            await repl.run()
+
+            if use_repl:
+                # 旧版 prompt_toolkit REPL（兜底）
+                repl = NormaREPL(agent=self.agent, cwd=os.getcwd())
+                await repl.run()
+            else:
+                # 默认：Textual TUI（前后端经 MessageBus 解耦）
+                from norma.cli.ui.tui.app import NormaApp
+
+                app = NormaApp(
+                    agent=self.agent,
+                    cwd=os.getcwd(),
+                    message_bus=self.message_bus,
+                    user_input_manager=self.user_input_manager,
+                )
+                await app.run_async()
         finally:
             try:
                 await self.hook_manager.dispatch(HookEvent.SESSION_END)
@@ -256,6 +270,13 @@ class NormaCLI:
 
 
 def main():
+    # Windows 默认 GBK 控制台无法输出 ✓ 等 Unicode 字符，强制 UTF-8 输出
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
     parser = argparse.ArgumentParser(
         description='Norma AI Agent - 智能编码助手',
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -275,11 +296,15 @@ def main():
         '--resume', '-r', type=str, default=None,
         help='恢复指定 session_id 的会话'
     )
+    parser.add_argument(
+        '--repl', action='store_true', default=False,
+        help='使用旧版 prompt_toolkit REPL（默认启动 Textual TUI）'
+    )
     args = parser.parse_args()
 
     try:
         cli = NormaCLI(resume_session=args.resume)
-        asyncio.run(cli.run())
+        asyncio.run(cli.run(use_repl=args.repl))
     except KeyboardInterrupt:
         print("\n\n程序已退出")
         sys.exit(0)

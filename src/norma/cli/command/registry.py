@@ -29,6 +29,14 @@ class CommandContext:
     def console(self):
         return self.repl.console
 
+    def print(self, text: str) -> None:
+        """输出命令文本（由前端决定如何渲染：REPL 用 prompt_toolkit，TUI 写日志）。"""
+        self.repl.print_output(text)
+
+    def clear_screen(self) -> None:
+        """清屏（由前端决定如何实现：REPL 调用系统清屏，TUI 清空日志控件）。"""
+        self.repl.clear_screen()
+
 
 class CommandInfo:
     """命令元信息"""

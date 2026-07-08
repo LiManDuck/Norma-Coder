@@ -120,6 +120,22 @@ class NormaREPL:
             f"<style fg='#888888'>(Shift+Tab 切换模式)</style>"
         )
 
+    def print_output(self, text: str) -> None:
+        """统一文本输出入口：命令处理器通过 ctx.print 调用此方法。
+
+        text 为 prompt_toolkit 的 HTML 片段字符串（与现有命令输出风格一致）。
+        """
+        try:
+            print_formatted_text(HTML(text))
+        except Exception:
+            # HTML 解析失败时回退到纯文本
+            print(text)
+
+    def clear_screen(self) -> None:
+        """清屏（REPL 实现：调用系统清屏命令）。"""
+        import os
+        os.system('clear' if os.name != 'nt' else 'cls')
+
     def show_banner(self):
         """显示启动横幅"""
         banner = HTML("""

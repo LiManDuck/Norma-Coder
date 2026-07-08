@@ -59,11 +59,11 @@
 - [ ] 端到端真实 LLM 冒烟（需可达 API；本地 plumbing 已用模拟事件走同路径验证）。
 
 ## P6 对齐增强（按价值择优）
-- [ ] 工具并发分区（is_read_only 并发，写串行）。
+- [x] 工具并发分区（只读并发，写串行）：`Tool.is_readonly` 元数据 + `NormaArtifact.execute_tools` 分区，结果按原序返回；Read/Ls/Glob/Grep/TaskGet/TaskList 标记只读。
+- [x] MCP 工具名前缀 `mcp__server__tool`（`MCPTool` 已实现，含 `is_readonly`/`is_destructive`）。
 - [ ] Session parent_uuid 链 + compact_boundary。
 - [ ] 分层 compaction（微压缩清旧 tool_result）。
 - [ ] 系统提示结构化（list[str] 块 + env + CLAUDE.md）。
-- [ ] MCP 工具名前缀 `mcp__server__tool`。
 
 ## 提交节奏
 - 每完成一个阶段（或阶段内可独立运行的切片）-> commit + push。

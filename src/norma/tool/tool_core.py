@@ -124,12 +124,40 @@ class NormaArtifact:
         self,
         tool_requests: List[ToolRequest],
     ) -> List[ToolRequestResult]:
-        """批量并发执行工具调用。"""
+        """批量执行工具调用。
+
+        分区策略（对齐 claude-code）：只读工具并发执行，写工具串行执行，
+        避免写操作相互干扰。最终结果按原始请求顺序返回。
+        """
         if not tool_requests:
             return []
-        logger.info(f"Executing {len(tool_requests)} tools concurrently")
-        tasks = [self.execute_tool(request) for request in tool_requests]
-        return await asyncio.gather(*tasks, return_exceptions=False)
+
+        results: List[Optional[ToolRequestResult]] = [None] * len(tool_requests)
+        readonly_idx = [i for i, r in enumerate(tool_requests) if self._is_readonly(r)]
+        write_idx = [i for i, r in enumerate(tool_requests) if not self._is_readonly(r)]
+
+        # 只读工具并发
+        if readonly_idx:
+            logger.info(f"Executing {len(readonly_idx)} read-only tools concurrently")
+            ro_results = await asyncio.gather(
+                *(self.execute_tool(tool_requests[i]) for i in readonly_idx)
+            )
+            for i, res in zip(readonly_idx, ro_results):
+                results[i] = res
+
+        # 写工具串行（保持顺序）
+        for i in write_idx:
+            logger.info(f"Executing write tool '{tool_requests[i].tool_call_name}' serially")
+            results[i] = await self.execute_tool(tool_requests[i])
+
+        return results  # type: ignore[return-value]
+
+    def _is_readonly(self, request: ToolRequest) -> bool:
+        """判断工具是否只读（未知工具视为非只读）。"""
+        tool = self._tools.get(request.tool_call_name)
+        if tool is None:
+            return False
+        return getattr(tool, "is_readonly", False)
 
     # ==================== 辅助方法 ====================
 

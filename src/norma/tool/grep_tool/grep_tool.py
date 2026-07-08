@@ -50,6 +50,10 @@ class GrepTool(Tool):
         return "Grep"
 
     @property
+    def is_readonly(self) -> bool:
+        return True
+
+    @property
     def description(self) -> str:
         return """
 基于系统原生grep的搜索工具。支持正则表达式、文件过滤、多种输出模式和常用搜索选项。

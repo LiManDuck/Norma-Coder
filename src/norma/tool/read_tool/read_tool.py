@@ -66,6 +66,10 @@ class ReadTool(Tool):
         return "Read"
 
     @property
+    def is_readonly(self) -> bool:
+        return True
+
+    @property
     def description(self) -> str:
         return DEFAULT_TOOL_PROMPT
 

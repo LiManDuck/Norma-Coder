@@ -168,6 +168,10 @@ class TaskListTool(Tool):
         return "TaskList"
 
     @property
+    def is_readonly(self) -> bool:
+        return True
+
+    @property
     def description(self) -> str:
         return (
             "列出当前会话的所有任务摘要，包括 id / subject / status / owner / blockedBy。\n"
@@ -214,6 +218,10 @@ class TaskGetTool(Tool):
     @property
     def name(self) -> str:
         return "TaskGet"
+
+    @property
+    def is_readonly(self) -> bool:
+        return True
 
     @property
     def description(self) -> str:

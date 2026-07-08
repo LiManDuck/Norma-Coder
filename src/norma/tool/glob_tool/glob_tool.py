@@ -38,6 +38,10 @@ class GlobTool(Tool):
         return "Glob"
 
     @property
+    def is_readonly(self) -> bool:
+        return True
+
+    @property
     def description(self) -> str:
         return """
 快速文件模式匹配工具，适用于任何代码库大小。支持通配符模式如"**/*.js"或"src/**/*.ts"。返回按修改时间排序的匹配文件路径。

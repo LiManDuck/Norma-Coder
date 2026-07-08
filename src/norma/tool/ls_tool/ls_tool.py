@@ -53,6 +53,10 @@ class LsTool(Tool):
         return "Ls"
 
     @property
+    def is_readonly(self) -> bool:
+        return True
+
+    @property
     def description(self) -> str:
         return """
 列出指定路径下的文件和目录。path 参数必须是绝对路径，而不是相对路径。你可以通过 ignore 参数选择性地提供一个 glob 模式数组来忽略某些文件。如果你知道要搜索哪些目录，通常应该优先使用 Glob 和 Grep 工具。

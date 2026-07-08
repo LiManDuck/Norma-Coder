@@ -117,6 +117,14 @@ class Tool:
     @property
     def schema(self) -> ToolSchema: ...
 
+    @property
+    def is_readonly(self) -> bool:
+        """是否为只读工具（无副作用）。只读工具可安全并发；写工具需串行。
+
+        默认 False，由具体只读工具覆盖为 True（如 Read/Ls/Glob/Grep）。
+        """
+        return False
+
     @abstractmethod
     async def execute(self, tool_request: ToolRequest) -> ToolRequestResult:
         """执行工具调用"""

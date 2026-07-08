@@ -133,12 +133,14 @@ class NormaCoder(BaseAgent):
         session_manager: Optional[SessionManager] = None,
         # compaction
         compact_threshold: float = 0.75,
+        micro_compact_retain: int = 6,
     ):
         self._name = name
         self.llm = llm
         self.cwd = cwd
         self.max_runturns = max_runturns
         self.compact_threshold = compact_threshold
+        self._tool_retain = micro_compact_retain
 
         # ---- 系统总线 / 权限 / hook ----
         self.message_bus = message_bus
@@ -253,9 +255,11 @@ class NormaCoder(BaseAgent):
             for _turn in range(self.max_runturns):
                 # ---- 检查是否需要 compaction ----
                 if await self._should_compact():
-                    compact_event = await self._do_compact()
-                    if compact_event:
-                        yield compact_event
+                    # 分层 compaction：先微压缩（无 LLM），仍超阈值再完整摘要
+                    if (not await self._micro_compact()) or await self._should_compact():
+                        compact_event = await self._do_compact()
+                        if compact_event:
+                            yield compact_event
 
                 history_messages = await self.memory.pull_messages()
 
@@ -401,9 +405,10 @@ class NormaCoder(BaseAgent):
                 elif finish_reason == "length":
                     # 上下文超限 → 尝试 compaction
                     logger.warning("finish_reason=length, attempting compaction")
-                    compact_event = await self._do_compact()
-                    if compact_event:
-                        yield compact_event
+                    if (not await self._micro_compact()) or await self._should_compact():
+                        compact_event = await self._do_compact()
+                        if compact_event:
+                            yield compact_event
                     # compaction 后继续循环
 
                 else:
@@ -479,6 +484,38 @@ class NormaCoder(BaseAgent):
             total_chars = sum(len(m.content) for m in messages if hasattr(m, 'content') and m.content)
             estimated = int(total_chars / 2.5)
         return estimated > max_tokens * self.compact_threshold
+
+    async def _micro_compact(self) -> bool:
+        """微压缩（分层 compaction 第一层）：截断较早的 tool_result 内容，保留近期 N 条。
+
+        - 不调用 LLM，零成本、零幻觉风险；
+        - 仅缩短 ``ToolMessage.content``，不删消息、不改 ``tool_call_id``，
+          故 assistant.tool_calls -> tool 的序列仍合法；
+        - 保留最近 ``self._tool_retain`` 条 tool_result 原文，更早的截断为前缀+占位符。
+
+        Returns:
+            bool: 是否有改动。
+        """
+        messages = self.memory._messages
+        tool_idx = [i for i, m in enumerate(messages) if isinstance(m, ToolMessage)]
+        retain = max(0, self._tool_retain)
+        if len(tool_idx) <= retain:
+            return False
+        to_compress = tool_idx[:-retain] if retain > 0 else tool_idx
+        keep = 300
+        changed = 0
+        for i in to_compress:
+            m = messages[i]
+            if m.content and len(m.content) > keep + 50:
+                new_content = m.content[:keep] + "\n...[已微压缩，省略后续输出]"
+                messages[i] = ToolMessage(tool_result=m.tool_result, content=new_content)
+                changed += 1
+        if changed:
+            logger.info(
+                f"Micro-compaction: truncated {changed} old tool result(s), "
+                f"kept last {retain} verbatim"
+            )
+        return changed > 0
 
     async def _do_compact(self):
         """执行上下文压缩：让模型总结历史消息，保留关键信息"""

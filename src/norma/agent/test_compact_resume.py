@@ -28,8 +28,10 @@ from norma.core.llm_types import (  # noqa: E402
     LLMRequest,
     LLMResponse,
     SystemMessage,
+    ToolMessage,
     UserMessage,
 )
+from norma.core.tool_types import ToolRequest, ToolRequestResult  # noqa: E402
 from norma.agent.norma_coder import NormaCoder  # noqa: E402
 from norma.session.session import SessionManager, sanitize_path  # noqa: E402
 
@@ -134,11 +136,65 @@ async def test_restore_trims_at_boundary(tmp_cwd: str, config_home: str) -> None
     print("[PASS] test_restore_trims_at_boundary")
 
 
+async def test_micro_compact(tmp_cwd: str, config_home: str) -> None:
+    """微压缩：截断较早的 tool_result，保留近期 N 条，不删消息、保留 tool_call_id"""
+    os.environ["NORMA_CONFIG_HOME"] = config_home
+    sm = SessionManager(cwd=tmp_cwd)
+    sm.create(title="micro-test")
+    agent = _make_agent(tmp_cwd, sm)
+    agent._tool_retain = 6  # 保留最近 6 条 tool_result
+
+    # 构造 8 个 (assistant+tool) 轮次，tool_result 内容很长（500 字符）
+    long_content = "X" * 500
+    for i in range(8):
+        req = ToolRequest(
+            tool_call_id=f"tc_{i}",
+            tool_call_name="Read",
+            tool_call_arguments={"path": f"f{i}"},
+        )
+        await agent.memory.push_messages([AssistantMessage(
+            content=f"turn {i}", tool_calls=[req],
+        )])
+        await agent.memory.push_messages([ToolMessage(
+            tool_result=ToolRequestResult(
+                request=req, result=long_content, content=long_content,
+                is_error=False, execution_times=0.0,
+            ),
+            content=long_content,
+        )])
+
+    tool_before = [m for m in agent.memory._messages if isinstance(m, ToolMessage)]
+    assert len(tool_before) == 8
+
+    changed = await agent._micro_compact()
+    assert changed is True, "应有微压缩改动（8>6）"
+
+    tool_after = [m for m in agent.memory._messages if isinstance(m, ToolMessage)]
+    assert len(tool_after) == 8, "微压缩不应删除消息"
+    # 最近 6 条保持原文
+    for m in tool_after[-6:]:
+        assert m.content == long_content, "最近 6 条 tool_result 应保持原文"
+    # 最早 2 条被截断
+    for m in tool_after[:2]:
+        assert len(m.content) < 500, "较早的 tool_result 应被截断"
+        assert m.content.startswith("X" * 300), "应保留前 300 字符"
+        assert "已微压缩" in m.content, "应含截断占位标记"
+        # tool_call_id 链接保持
+        assert m.tool_call_id in {f"tc_{i}" for i in range(2)}
+
+    # 再调一次（已无超过 retain 的可压缩新增）应返回 False
+    changed2 = await agent._micro_compact()
+    # 最早 2 条已短于阈值，不会被再次截断 -> False
+    assert changed2 is False, "已无可压缩项时应返回 False"
+    print("[PASS] test_micro_compact")
+
+
 async def main() -> int:
     failures = 0
     for runner, name in (
         (test_compact_writes_boundary, "compact_writes_boundary"),
         (test_restore_trims_at_boundary, "restore_trims_at_boundary"),
+        (test_micro_compact, "micro_compact"),
     ):
         with tempfile.TemporaryDirectory() as tmp_cwd, \
                 tempfile.TemporaryDirectory() as config_home:
@@ -167,10 +223,16 @@ if __name__ == "__main__":
     async def _pytest_restore():
         await test_restore_trims_at_boundary(tempfile.mkdtemp(), tempfile.mkdtemp())
 
+    async def _pytest_micro():
+        await test_micro_compact(tempfile.mkdtemp(), tempfile.mkdtemp())
+
     def test_compact_writes_boundary_pytest():
         asyncio.run(_pytest_compact())
 
     def test_restore_trims_at_boundary_pytest():
         asyncio.run(_pytest_restore())
+
+    def test_micro_compact_pytest():
+        asyncio.run(_pytest_micro())
 
     raise SystemExit(asyncio.run(main()))

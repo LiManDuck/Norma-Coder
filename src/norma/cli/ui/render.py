@@ -95,9 +95,7 @@ class AgentEventRenderer:
 
     def _render_llm_response(self, event: AgentLLMResponseEvent) -> HTML:
         """Renders streaming tokens or intermediate thought processes."""
-        # Assuming event has a 'content' or 'text' field
-        # Note: Keeps original logic checking for 'resonse' typo just in case
-        text = event.resonse.content
+        text = event.response.content
         return HTML(f"<style fg='ansigreen'>{html.escape(str(text))}</style>")
 
     def _render_think_event(self, event: AgentThinkEvent) -> HTML:

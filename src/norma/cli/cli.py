@@ -110,7 +110,7 @@ class NormaCLI:
             "model": "glm-4.5-air",
             "api_key": "sk-1234",
             "base_url": "http://api.openai.rnd.huawei.com/v1",
-            "stream_mode": False,
+            "stream_mode": True,
             "permission": {
                 "mode": "auto",
                 "tools": {},
@@ -166,6 +166,7 @@ class NormaCLI:
             base_url=active_url,
             providers=providers,
             default_provider=default_provider,
+            default_stream_mode=self.config.get("stream_mode", True),
         )
 
     # ----------------------- Agent -----------------------

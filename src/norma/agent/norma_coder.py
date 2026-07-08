@@ -262,6 +262,7 @@ class NormaCoder(BaseAgent):
                 llm_request = LLMRequest(
                     messages=history_messages,
                     tools=self.tool_manager.get_tool_schemas(),
+                    stream_mode=getattr(self.llm, "default_stream_mode", True),
                 )
 
                 llm_request_event = AgentLLMRequestEvent(
@@ -308,7 +309,7 @@ class NormaCoder(BaseAgent):
 
                 llm_response_event = AgentLLMResponseEvent(
                     agent_name=self.name,
-                    resonse=llm_response,
+                    response=llm_response,
                     create_time=datetime.now().isoformat(),
                 )
                 events.append(llm_response_event)

@@ -217,7 +217,7 @@ async def AgentConsole(
                 )
                 await arich_print(rule)
                 
-                if show_messages and message.resonse.response_message:
+                if show_messages and message.response.response_message:
                     # Display message history
                     table = Table(
                         title="Messages",
@@ -229,8 +229,8 @@ async def AgentConsole(
                     table.add_column("Content", style="white")
                     
                     
-                    content = message.resonse.response_message.content
-                    role = message.resonse.response_message.role
+                    content = message.response.response_message.content
+                    role = message.response.response_message.role
                     table.add_row(role, content)
                     
                     await arich_print(table)
@@ -238,7 +238,7 @@ async def AgentConsole(
                 # Display response info
                 if output_stats:
                     response_info = (
-                        f"[dim]Finish Reason: {message.resonse.response_message} | "
+                        f"[dim]Finish Reason: {message.response.response_message} | "
                         f"Duration: {message.duration_seconds:.2f}s[/dim]"
                     )
                     await arich_print(response_info)

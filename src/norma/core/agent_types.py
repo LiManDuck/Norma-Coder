@@ -60,7 +60,7 @@ class AgentLLMRequestEvent(AgentEvent):
 
 
 class AgentLLMResponseEvent(AgentEvent):
-    resonse: LLMResponse
+    response: LLMResponse
 
 
 class AgentInputEvent(AgentEvent):

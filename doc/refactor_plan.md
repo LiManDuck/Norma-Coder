@@ -25,8 +25,9 @@
 - [x] 修复 `system_prompt.py` 引用的 md 文件名错误（`claude_system_prompt.md` -> `claude_code_system_prompt.md`），导致 Agent 构造失败。
 - [x] 修复 Windows GBK 控制台无法输出 `✓` 等 Unicode 字符（`main()` 中将 stdout/stderr reconfigure 为 UTF-8）。
 - [x] 冒烟测试：`NormaCLI()` 构造通过（agent=normacoder, 12 工具）。
-- [ ] 清理 `tool_core.py` 死代码（延后）。
-- [ ] 修正 `AgentLLMResponseEvent.resonse` 拼写 -> `response`（4 文件同步；延后，当前已全栈一致使用该拼写）。
+- [x] 清理 `tool_core.py` 死代码：移除 `NormaArtifactContext`/`ExecutionMode`/`PermissionResult`/`ToolExecuteChecker`/`DefaultToolChecker` 注释块/`_load_default_tools`/`_init_from_context`/`_record_call`/`tool_call_history`/`readed_files`，精简 `NormaArtifact`；同步 `tool/__init__.py` 导出。
+- [x] 修正 `AgentLLMResponseEvent.resonse` 拼写 -> `response`（agent_types/norma_coder/console/render/tui 5 处同步）。
+- [x] 接通 `config.stream_mode` -> `OpenAILLM.default_stream_mode` -> `LLMRequest.stream_mode`（此前配置项与属性均为死代码，agent 恒走流式）。
 
 ## P2 流式基础
 - [x] 重写 `stream_chat`：增量 yield `LLMResponse`，填充 `stream_content`（delta 文本）/ `stream_reasoning`（推理 delta）；末尾 yield 完整 `response_message`+finish_reason+usage。

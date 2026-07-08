@@ -438,7 +438,7 @@ class NormaApp(App):
                 payload, AgentLLMResponseEvent
             ):
                 # 流式已在 delta 中展示，这里仅收尾；若无 delta 则补打最终内容
-                resp = payload.resonse
+                resp = payload.response
                 if not self._stream_active:
                     content = getattr(resp.response_message, "content", "") or ""
                     reason = getattr(resp.response_message, "reason_content", None)

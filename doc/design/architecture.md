@@ -96,12 +96,12 @@
 | 主循环 | `while True` + 单一 State，按 needs_follow_up 退出 | finish_reason 驱动 → 保留，补流式 delta 事件 |
 | 工具 schema | Zod → JSON Schema | Pydantic `model_json_schema()`（已具备） |
 | 校验链 | schema→validate_input→check_permissions→call | 已具备 permission；可补 validate_input |
-| 工具调度 | is_concurrency_safe 分区（只读并发/写串行） | 全部并发 gather → 可改为分区 |
+| 工具调用 | is_concurrency_safe 元数据（只读并发/写串行）| 已分区：只读 gather 并发、写串行，结果按原序（Tool.is_readonly + execute_tools） |
 | tool_result 块 | {tool_use_id, content, is_error} | 已具备 |
 | 权限 | modes + allow/deny/ask + bypass-immune | plan/edit/auto + per-tool → 可补规则 glob |
 | Hook | 子进程，JSON stdin，exit2=block | 子进程 env 注入 → 可补 JSON stdin/exit2 |
 | Skill | name/SKILL.md + inline/fork | 已具备 frontmatter+body + 子agent |
-| MCP | mcp__server__tool 命名 | 当前直连 tool.name → 可加前缀 |
+| MCP | mcp__server__tool 命名 | 已实现 mcp__server__tool 前缀（MCPTool），并回归验证 |
 | Session | jsonl + parent_uuid 链 + compact_boundary | jsonl 已具备 compact_boundary（压缩边界持久化 + restore 跳过边界前重放）；parent_uuid 链可选 |
 | Compaction | 微压缩(清旧tool_result)+自动(window-13k)+反应式(413) | 已分层：_micro_compact(无LLM截断旧tool_result,保留近N条) 先行，仍超阈值再完整 LLM 摘要 |
 | 系统提示 | list[str] 块 + 动态段注册 + env + CLAUDE.md | 已结构化：核心md + 环境段(cwd/平台) + CLAUDE.md(用户级+项目级祖先遍历) |

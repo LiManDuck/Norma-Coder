@@ -1,7 +1,8 @@
 # Norma-Coder 目标架构设计
 
-> 状态：持续更新。后端已大体就绪，本文档聚焦 **前端 TUI 打通** 与 **前后端事件解耦** 这两个核心缺口，
-> 并记录与 hermes-agent / claude-code 的差异。TUI 细节待 hermes-agent 研究结论细化。
+> 状态：TUI 打通 + 前后端事件解耦 + 真正流式 **已实现**（P1–P5 完成，P6 部分完成）。
+> Textual TUI（`cli/ui/tui/app.py`）订阅进程内 MessageBus 渲染；Agent 经 `AgentRunner` 后台驱动，
+> 事件经总线发布；ASK 确认弹层闭环；流式 delta 实时渲染。详见 §3 与 `doc/refactor_plan.md`。
 
 ## 1. 设计目标（来自 `doc/项目重构总体规划.md`）
 
@@ -15,9 +16,9 @@
 ### 2.1 已就绪（保留）
 | 子系统 | 位置 | 状态 |
 |---|---|---|
-| Agent 主循环 | `agent/norma_coder.py` | finish_reason 驱动的 async generator；缺流式 |
+| Agent 主循环 | `agent/norma_coder.py` | finish_reason 驱动的 async generator；流式 delta 事件 + 工具/最终响应 |
 | 工具 | `tool/*` | Read/Ls/Glob/Grep/Edit/Write/Bash/Task*/Agent/Skill |
-| 工具管理 | `tool/tool_core.py` `NormaArtifact` | 注册/并发执行；含一段死权限代码待清理 |
+| 工具管理 | `tool/tool_core.py` `NormaArtifact` | 注册/查询/执行；只读并发+写串行分区；死权限代码已清理 |
 | MCP | `mcp/{client,tool,manager}.py` | stdio JSON-RPC，可用 |
 | Session | `session/session.py` | jsonl 持久化 + /resume + --resume |
 | 权限 | `permission/permission.py` | plan/edit/auto + per-tool |
@@ -25,17 +26,17 @@
 | Reminder | `reminder/*` | `<system-reminder>` 注入 |
 | Skill | `skill/skill.py` | ~/.norma/skills + cwd/.norma/skills |
 | Command | `cli/command/*` | /new /help /exit /clear /model /compact /status /resume /session |
-| MessageBus | `messagebus/messagebus.py` | pub/sub + UserInputManager + AgentMessageAdapter；UIRenderer 定义但未接入 |
-| LLM | `core/openai_llm.py` | chat() + stream_chat()；stream_chat 实为缓冲后一次性 yield |
+| MessageBus | `messagebus/messagebus.py` | pub/sub + UserInputManager + AgentMessageAdapter；TUI 订阅渲染，ASK 闭环 |
+| LLM | `core/openai_llm.py` | chat() + stream_chat()（逐 chunk 增量 yield）；`stream_mode` 由 config 控制 |
 | Compaction | `norma_coder._do_compact` | 单层 LLM 摘要 |
 
-### 2.2 缺口（重构重点）
-1. **前端 TUI**：当前是 prompt_toolkit 行式 REPL；`textual` 已声明依赖但未使用。
-2. **事件解耦未落地**：REPL 直接 `async for event in agent.run()`；MessageBus 不在渲染链路上。
-3. **无真正流式**：`stream_chat` 缓冲全部内容后 yield 一次；`LLMResponse.stream_content` 从未填充。
-4. **ASK 确认流断裂**：`UI_PROMPT` 已发布但 REPL 从不回 `USER_CONFIRM/USER_REJECT`，ASK 会挂起至超时后拒绝。
-5. **Bug**：`openai_llm.py` 用 `Field` 未 import（已修复）。
-6. **死代码**：`NormaArtifactContext.check_permission`、`DefaultToolChecker`、`_load_default_tools`、`PermissionResult`。
+### 2.2 重构缺口（已全部解决）
+1. **前端 TUI** ✅：新增 `cli/ui/tui/app.py`（Textual 8.x），`cli.py` 默认启动 TUI，`--repl` 兜底。
+2. **事件解耦** ✅：`AgentRunner` 后台驱动 `agent.run()`，事件经 `NormaCoder._publish` → MessageBus；TUI `subscribe_all` → `post_message(BusEventMessage)` → UI 线程渲染。
+3. **真正流式** ✅：`stream_chat` 逐 chunk yield 增量（`stream_content`/`stream_reasoning`），末尾 yield 完整响应；`AgentTextDeltaEvent`/`AgentThinkDeltaEvent` 实时渲染到流式区。
+4. **ASK 确认流闭环** ✅：TUI 订阅 `UI_PROMPT` → `PermissionModal` → `UserInputManager.respond_confirmation` → `USER_CONFIRM/USER_REJECT` 解锁 future。
+5. **Bug 修复** ✅：`Field` import、`AssistantMessage.response` 必填、`system_prompt` md 文件名、Windows GBK 编码。
+6. **死代码清理** ✅：移除 `NormaArtifactContext`/`ExecutionMode`/`PermissionResult`/`DefaultToolChecker`/`_load_default_tools` 等；接通 `config.stream_mode`；修正 `resonse` 拼写。
 
 ## 3. 目标架构
 

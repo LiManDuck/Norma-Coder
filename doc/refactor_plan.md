@@ -56,6 +56,7 @@
 - [x] 流式渲染：assistant 文本/推理增量实时追加流式区，收尾落盘（headless 模拟事件验证）。
 - [x] 中断：`Ctrl+C` 在运行中调用 `AgentRunner.cancel()`，`TurnFinishedMessage` 收尾。
 - [x] 权限确认弹层 allow/deny 闭环（headless 验证）。
+- [x] 专项回归测试覆盖：TUI e2e（`test_tui_e2e.py`，mock OpenAI client）、MCP stdio（`test_mcp_stdio.py`，mock MCP 服务器子进程）、Skill（`test_skill.py`，mock 子 agent）、compact/resume（`test_compact_resume.py`）。均 headless 可独立运行。
 - [ ] 端到端真实 LLM 冒烟（需可达 API；本地 plumbing 已用模拟事件走同路径验证）。
 
 ## P6 对齐增强（按价值择优）

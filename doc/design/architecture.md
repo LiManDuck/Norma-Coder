@@ -22,7 +22,7 @@
 | MCP | `mcp/{client,tool,manager}.py` | stdio JSON-RPC，可用 |
 | Session | `session/session.py` | jsonl 持久化 + /resume + --resume |
 | 权限 | `permission/permission.py` | plan/edit/auto + per-tool |
-| Hook | `hook/hook.py` | 订阅总线触发 shell 命令 |
+| Hook | 子进程 env 注入 + JSON stdin + exit2=block | env 注入已实现并回归验证（dispatch/匹配/总线订阅）；JSON stdin + exit2 阻断可选 |
 | Reminder | `reminder/*` | `<system-reminder>` 注入 |
 | Skill | `skill/skill.py` | ~/.norma/skills + cwd/.norma/skills |
 | Command | `cli/command/*` | /new /help /exit /clear /model /compact /status /resume /session |

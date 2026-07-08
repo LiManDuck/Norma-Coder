@@ -12,7 +12,10 @@
 - [x] P3 事件解耦（AgentRunner 桥接 generator->MessageBus；ASK 确认流闭环）
 - [x] P4 TUI 前端（textual app：滚动日志/流式区/状态栏/输入框/确认层/命令）
 - [x] P5 接入与打磨（MCP/skill/command 在 TUI 中可用；流式渲染；模式切换；冒烟通过）
-- [ ] P6 对齐增强（按需：~~工具并发分区~~、~~compact_boundary~~、~~系统提示结构化~~、~~分层 compaction~~、parent_uuid 链）
+- [~] P6 对齐增强（按需：~~工具并发分区~~、~~compact_boundary~~、~~系统提示结构化~~、~~分层 compaction~~ 已完成；parent_uuid 链可选未做）
+
+> **当前状态（功能完整）**：P0–P5 全部完成，P6 高价值项（并发分区 / compact_boundary / 系统提示结构化 / 分层 compaction）均已完成并有 headless 回归测试。MCP/Skill/TUI/compact 四大特性经端到端回归验证。仅剩 parent_uuid 链（低价值可选）与真实 LLM 端到端冒烟（需可达 API，本环境不可达）。回归套件：`test_system_prompt` / `test_compact_resume` / `test_mcp_stdio` / `test_skill` / `test_tui_e2e` / `test_hook`，均 headless 可独立运行。
+> **已知遗留**：`src/norma/agent/{functioncall_agent,repo_ase_agent,step_agent}.py` 为被 NormaCoder 取代的旧 repo-ASE agent 血统，引用已删除模块（`norma.core.types`/`norma.agent.core`/`norma.agent.agent`）且 `repo_ase_agent.py` 有语法错误，无任何 live 代码引用——可选清理。
 
 ## P0 现状盘点与参考研究
 - 通读 src/norma 全量代码，输出架构盘点（见 architecture.md §2）。

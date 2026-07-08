@@ -12,7 +12,7 @@
 - [x] P3 事件解耦（AgentRunner 桥接 generator->MessageBus；ASK 确认流闭环）
 - [x] P4 TUI 前端（textual app：滚动日志/流式区/状态栏/输入框/确认层/命令）
 - [x] P5 接入与打磨（MCP/skill/command 在 TUI 中可用；流式渲染；模式切换；冒烟通过）
-- [ ] P6 对齐增强（按需：~~工具并发分区~~、~~compact_boundary~~、parent_uuid 链、分层 compaction、系统提示结构化）
+- [ ] P6 对齐增强（按需：~~工具并发分区~~、~~compact_boundary~~、~~系统提示结构化~~、parent_uuid 链、分层 compaction）
 
 ## P0 现状盘点与参考研究
 - 通读 src/norma 全量代码，输出架构盘点（见 architecture.md §2）。
@@ -65,7 +65,7 @@
 - [x] compact_boundary：`_do_compact` 写入 `compact_boundary` 边界条目到 session jsonl；`restore_from_session` 遇到边界时丢弃边界前重放、仅保留 system+摘要+边界后轮次（回归测试 `test_compact_resume.py` 通过）。
 - [ ] Session parent_uuid 链（分支/fork，可选，价值较低）。
 - [ ] 分层 compaction（微压缩清旧 tool_result）。
-- [ ] 系统提示结构化（list[str] 块 + env + CLAUDE.md）。
+- [x] 系统提示结构化：`SystemPromptService` 拼装「核心指令 md + 环境段（cwd/平台）+ 项目记忆 CLAUDE.md」；CLAUDE.md 收集用户级 `~/.norma/CLAUDE.md` + 项目级（自 cwd 向上遍历祖先至根），项目级排在用户级之后（更优先），超长截断。回归测试 `test_system_prompt.py` 通过。
 
 ## 提交节奏
 - 每完成一个阶段（或阶段内可独立运行的切片）-> commit + push。

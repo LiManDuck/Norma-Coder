@@ -262,6 +262,11 @@ class NormaApp(App):
         self.message_bus.subscribe_all(self._on_bus_message)
         self._write_banner()
         self._refresh_status()
+        # 输入框自动聚焦，启动后即可直接打字
+        try:
+            self.query_one("#input", Input).focus()
+        except Exception:
+            pass
 
     # -----------------------------------------------------------------
     # REPL 兼容方法

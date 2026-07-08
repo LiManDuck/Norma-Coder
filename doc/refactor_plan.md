@@ -60,7 +60,7 @@
 - [x] 中断：`Ctrl+C` 在运行中调用 `AgentRunner.cancel()`，`TurnFinishedMessage` 收尾。
 - [x] 权限确认弹层 allow/deny 闭环（headless 验证）。
 - [x] 专项回归测试覆盖：TUI e2e（`test_tui_e2e.py`，mock OpenAI client）、MCP stdio（`test_mcp_stdio.py`，mock MCP 服务器子进程）、Skill（`test_skill.py`，mock 子 agent）、compact/resume（`test_compact_resume.py`）。均 headless 可独立运行。
-- [ ] 端到端真实 LLM 冒烟（需可达 API；本地 plumbing 已用模拟事件走同路径验证）。
+- [x] 端到端真实 LLM 冒烟脚本 `python -m norma.smoke_real_llm`：读取 `~/.norma/config.json`，用真实 api_key/base_url 走非流式 `chat()` + 流式 `stream_chat()` 各一次，验证连通与解析；未配置真实 key 或不可达时 SKIP（不阻塞），可由用户在自有环境一键验证。
 
 ## P6 对齐增强（按价值择优）
 - [x] 工具并发分区（只读并发，写串行）：`Tool.is_readonly` 元数据 + `NormaArtifact.execute_tools` 分区，结果按原序返回；Read/Ls/Glob/Grep/TaskGet/TaskList 标记只读。

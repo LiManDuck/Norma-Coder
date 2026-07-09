@@ -303,9 +303,41 @@ async def test_command_paths() -> None:
         await bus.stop()
 
 
+async def test_f2_cycles_permission_mode() -> None:
+    """F2 在 plan -> edit -> auto 间循环切换权限模式并回到起点。"""
+    from norma.cli.cli import NormaCLI
+    from norma.cli.ui.tui.app import NormaApp
+    from norma.permission import PermissionMode
+
+    cli = NormaCLI()
+    await cli.message_bus.start()
+    try:
+        app = NormaApp(
+            agent=cli.agent, cwd=".", message_bus=cli.message_bus,
+            user_input_manager=cli.user_input_manager,
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            checker = cli.agent.permission_checker
+            assert checker is not None and checker.config is not None
+            start = checker.config.mode
+            assert start in (PermissionMode.PLAN, PermissionMode.EDIT, PermissionMode.AUTO)
+
+            modes = []
+            for _ in range(3):
+                await pilot.press("f2")
+                await pilot.pause(delay=0.05)
+                modes.append(checker.config.mode)
+
+            assert len(set(modes)) == 3, f"三次按键应遍历三种模式，实际 {modes}"
+            assert modes[-1] == start, f"第三次应回到起点 {start}，实际 {modes[-1]}"
+    finally:
+        await cli.message_bus.stop()
+
+
 async def test_permission_modal_roundtrip() -> None:
     """UI_PROMPT -> 权限弹窗 -> 按 y -> request_confirmation 返回 True。"""
-    from norma.messagebus.messagebus import Message, MessageType
+    from norma.messagebus.messagebus import Message, MessageType  # noqa: F401
     from norma.cli.ui.tui.app import PermissionModal
 
     app, bus, uim = await _build_app()
@@ -344,6 +376,7 @@ async def _amain() -> int:
         ("tool_error_and_success_render", test_tool_error_and_success_render),
         ("interrupt_mid_stream", test_interrupt_mid_stream),
         ("command_paths", test_command_paths),
+        ("f2_cycles_permission_mode", test_f2_cycles_permission_mode),
         ("permission_modal_roundtrip", test_permission_modal_roundtrip),
     ]
     failures = 0

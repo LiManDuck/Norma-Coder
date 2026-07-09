@@ -71,7 +71,7 @@
 
 ## P7 清理与前端硬化
 - [x] 移除 3 个遗留死 agent 模块（`functioncall_agent.py`/`repo_ase_agent.py`/`step_agent.py`）：闭环死集群，引用已删除模块且含语法错误，无存活代码引用（可从 git 历史恢复）；`walk_packages` 导入失败 3 -> 0。
-- [x] 前端硬化回归 `test_tui_render.py`：补 `test_tui_e2e.py` 未覆盖的前端渲染正确性与交互（思考块/多工具调用/工具成功错误标记/流式中断/权限弹窗往返），向真实 MessageBus 发布合成事件 + Textual pilot 抽干消息泵，复现总线->post_message->渲染全链路。
+- [x] 前端硬化回归 `test_tui_render.py`（7 项）：补 `test_tui_e2e.py` 未覆盖的前端渲染正确性与交互--思考块、多工具调用、工具成功(⚙)/错误(✗)标记、流式中断(Ctrl+C)、命令路径(/help 渲染 + 未知命令提示 + /clear 不误报)、F2 权限模式循环、权限弹窗往返(UI_PROMPT->弹窗->y->True)。向真实 MessageBus 发布合成事件 + Textual pilot 抽干消息泵，复现总线->post_message->渲染全链路。
 - [ ] Session parent_uuid 链（分支/fork，可选，价值较低）。
 - [ ] JSON stdin + exit2 阻断式 Hook（可选；当前权限系统已覆盖工具执行门禁）。
 

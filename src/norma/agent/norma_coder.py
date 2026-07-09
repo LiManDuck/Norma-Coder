@@ -160,13 +160,15 @@ class NormaCoder(BaseAgent):
         self.session_manager = session_manager
 
         # ---- 工具 ----
+        # 共享「已读文件」集合：Read/Write 记录、Edit 校验，使「先读后编」门禁真正生效
+        read_files_registry: set = set()
         default_tools: List[Tool] = [
-            ReadTool(),
+            ReadTool(read_files_registry=read_files_registry),
             LsTool(cwd=cwd),
             GlobTool(cwd=cwd),
             GrepTool(),
-            EditTool(),
-            WriteTool(),
+            EditTool(readed_files=read_files_registry),
+            WriteTool(read_files_registry=read_files_registry),
             TaskCreateTool(),
             TaskListTool(),
             TaskGetTool(),

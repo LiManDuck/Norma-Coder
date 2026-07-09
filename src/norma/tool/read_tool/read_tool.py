@@ -99,8 +99,14 @@ class ReadTool(Tool):
             strict=False
         )
 
-    def __init__(self):
-        """初始化ReadTool,定义支持的文本文件扩展名"""
+    def __init__(self, read_files_registry: Optional[set] = None):
+        """初始化ReadTool,定义支持的文本文件扩展名
+
+        Args:
+            read_files_registry: 与 Edit/Write 共享的已读文件集合；Read 成功后
+                会把绝对路径加入其中，使后续 Edit 通过「先读后编」校验。
+        """
+        self.read_files_registry = read_files_registry if read_files_registry is not None else set()
         # 常见的文本文件扩展名白名单
         self.text_file_extensions = {
             # 编程语言
@@ -255,6 +261,13 @@ class ReadTool(Tool):
             execution_time = time.time() - start_time
 
             if result.get("success"):
+                # 记录已读，使后续 Edit 通过「先读后编」校验
+                try:
+                    self.read_files_registry.add(
+                        str(Path(call_args["file_path"]).resolve())
+                    )
+                except Exception:  # noqa: BLE001
+                    pass
                 return ToolRequestResult(
                     request=tool_request,
                     result=result,

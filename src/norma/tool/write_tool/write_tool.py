@@ -48,9 +48,14 @@ from norma.core.tool_types import (
 class WriteTool(Tool):
     """Write工具类 - 继承自Tool基类,用于写入文件"""
 
-    def __init__(self):
-        """初始化WriteTool"""
-        self.read_files_registry = set()  # 跟踪已读取的文件
+    def __init__(self, read_files_registry: Optional[set] = None):
+        """初始化WriteTool
+
+        Args:
+            read_files_registry: 与 Read/Edit 共享的已读文件集合；Write 成功后
+                会把绝对路径加入其中，使后续 Edit 通过「先读后编」校验。
+        """
+        self.read_files_registry = read_files_registry if read_files_registry is not None else set()
         self.backup_enabled = True
 
 

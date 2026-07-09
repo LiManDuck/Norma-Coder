@@ -144,12 +144,13 @@ class EditTool(Tool):
                 call_args = self.parse_string_arguments(tool_request.tool_call_arguments)
             
             except ToolRequestError as e:
-
+                execution_time = time.time() - start_time
                 return ToolRequestResult(
-                    request=  tool_request,
-                    result= e,
-                    is_error= False,
-                    content= f'{str(e)}'
+                    request=tool_request,
+                    result=e,
+                    is_error=True,
+                    content=f'{str(e)}',
+                    execution_times=execution_time
                 )
         else:
             call_args = tool_request.tool_call_arguments

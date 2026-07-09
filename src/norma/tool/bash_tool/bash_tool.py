@@ -100,6 +100,7 @@ import json
 import time
 import subprocess
 import shlex
+import shutil
 import threading
 import uuid
 import queue
@@ -114,6 +115,23 @@ from norma.core.tool_types import (
     ToolRequest,
     ToolRequestResult
 )
+
+
+def _resolve_bash_executable() -> str:
+    """跨平台解析 bash 可执行文件路径。
+
+    优先用 ``shutil.which('bash')`` 从 PATH 解析（Windows 下需 git-bash 等提供）；
+    解析失败时 Unix 回退到 ``/bin/bash``，Windows 回退到 ``bash``（交给 Popen
+    再找 PATH，找不到会抛 FileNotFoundError）。
+    """
+    found = shutil.which("bash")
+    if found:
+        return found
+    return "/bin/bash" if os.name != "nt" else "bash"
+
+
+# os.setsid 仅 POSIX 存在；Windows 下 preexec_fn 必须为 None
+_BASH_PREEXEC_FN = os.setsid if os.name == "posix" else None
 
 
 class BashSession:
@@ -149,14 +167,14 @@ class BashSession:
                         self.process.kill()
                 
                 self.process = subprocess.Popen(
-                    ['/bin/bash'],
+                    [_resolve_bash_executable()],
                     stdin=subprocess.PIPE,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
                     bufsize=0,
                     cwd=self.cwd,
-                    preexec_fn=os.setsid  # 创建新进程组，便于终止
+                    preexec_fn=_BASH_PREEXEC_FN,  # POSIX 创建新进程组便于终止；Windows 为 None
                 )
                 
                 # 清空队列
@@ -236,13 +254,16 @@ class BashSession:
         marker = f"__CMD_DONE_{uuid.uuid4().hex}__"
         exit_code_marker = f"__EXIT_CODE_{uuid.uuid4().hex}__"
         
-        # 修改命令以捕获exit code
+        # 用唯一标记判断命令完成并捕获 exit code。
+        # 注意：原先 `echo {exit_code_marker}$__EXIT_CODE{exit_code_marker}` 会被 bash
+        # 贪婪解析为未设置变量 `${__EXIT_CODE__EXIT_CODE_xxx__}`（变量名含下划线/字母
+        # 数字），导致退出码恒为空、exit_code 永远为 None、完成循环永不退出（120s 超时）。
+        # 改为命令后立即用 $? 捕获退出码（$? 为单字符特殊变量，不会被贪婪吞并）。
         full_command = (
             f"{command}\n"
-            f"__EXIT_CODE=$?\n"
+            f'echo "{exit_code_marker}$?{exit_code_marker}"\n'
             f"echo {marker}\n"
             f"echo {marker} >&2\n"
-            f"echo {exit_code_marker}$__EXIT_CODE{exit_code_marker}\n"
         )
         
         # 发送命令

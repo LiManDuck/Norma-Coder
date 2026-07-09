@@ -14,7 +14,7 @@
 - [x] P5 接入与打磨（MCP/skill/command 在 TUI 中可用；流式渲染；模式切换；冒烟通过）
 - [~] P6 对齐增强（按需：~~工具并发分区~~、~~compact_boundary~~、~~系统提示结构化~~、~~分层 compaction~~ 已完成；parent_uuid 链可选未做）
 
-> **当前状态（功能完整）**：P0–P5 全部完成，P6 高价值项（并发分区 / compact_boundary / 系统提示结构化 / 分层 compaction）均已完成并有 headless 回归测试。MCP/Skill/TUI/compact 四大特性经端到端回归验证。仅剩 parent_uuid 链（低价值可选）与真实 LLM 端到端冒烟（需可达 API，本环境不可达）。回归套件：`test_system_prompt` / `test_compact_resume` / `test_mcp_stdio` / `test_skill` / `test_tui_e2e` / `test_hook` / `test_reminder` / `test_agent_tool`，均 headless 可独立运行。
+> **当前状态（功能完整）**：P0–P5 全部完成，P6 高价值项（并发分区 / compact_boundary / 系统提示结构化 / 分层 compaction）均已完成并有 headless 回归测试。MCP/Skill/TUI/compact 四大特性经端到端回归验证。P7 进一步硬化前端、移除死代码、修复 REPL 权限挂起与 3 个核心工具致命缺陷（BashTool Windows 崩溃 + 120s 超时、EditTool 先读后编门禁失效）。仅剩 parent_uuid 链（低价值可选）与真实 LLM 端到端冒烟（需可达 API，本环境不可达）。回归套件 11/11：`test_system_prompt` / `test_compact_resume` / `test_mcp_stdio` / `test_skill` / `test_tui_e2e` / `test_tui_render` / `test_repl_permission` / `test_hook` / `test_reminder` / `test_agent_tool` / `test_tools`，均 headless 可独立运行。
 > **已知遗留**：`src/norma/agent/{functioncall_agent,repo_ase_agent,step_agent}.py` 为被 NormaCoder 取代的旧 repo-ASE agent 血统，引用已删除模块（`norma.core.types`/`norma.agent.core`/`norma.agent.agent`）且 `repo_ase_agent.py` 有语法错误，无任何 live 代码引用——可选清理。
 
 ## P0 现状盘点与参考研究
@@ -59,7 +59,7 @@
 - [x] 流式渲染：assistant 文本/推理增量实时追加流式区，收尾落盘（headless 模拟事件验证）。
 - [x] 中断：`Ctrl+C` 在运行中调用 `AgentRunner.cancel()`，`TurnFinishedMessage` 收尾。
 - [x] 权限确认弹层 allow/deny 闭环（headless 验证）。
-- [x] 专项回归测试覆盖（headless、可独立运行，10/10 全绿）：TUI e2e（`test_tui_e2e.py`，mock OpenAI client，流式+非流式两轮）、TUI 前端渲染与交互（`test_tui_render.py`，思考块/多工具调用/工具成功错误标记/流式中断/命令路径/F2 模式/权限弹窗往返）、REPL 权限确认（`test_repl_permission.py`，UI_PROMPT 订阅 + 可注入 prompt_confirm，allow/deny）、MCP stdio（`test_mcp_stdio.py`，mock MCP 服务器子进程）、Skill（`test_skill.py`，mock 子 agent）、compact/resume（`test_compact_resume.py`，边界+微压缩）、系统提示（`test_system_prompt.py`，CLAUDE.md 注入与排序）、Reminder（`test_reminder.py`）、Hook（`test_hook.py`，环境变量/match/总线订阅）、AgentTool（`test_agent_tool.py`，前台/后台/session 复用）。
+- [x] 专项回归测试覆盖（headless、可独立运行，11/11 全绿）：TUI e2e（`test_tui_e2e.py`，mock OpenAI client，流式+非流式两轮）、TUI 前端渲染与交互（`test_tui_render.py`，思考块/多工具调用/工具成功错误标记/流式中断/命令路径/F2 模式/权限弹窗往返）、REPL 权限确认（`test_repl_permission.py`，UI_PROMPT 订阅 + 可注入 prompt_confirm，allow/deny）、MCP stdio（`test_mcp_stdio.py`，mock MCP 服务器子进程）、Skill（`test_skill.py`，mock 子 agent）、compact/resume（`test_compact_resume.py`，边界+微压缩）、系统提示（`test_system_prompt.py`，CLAUDE.md 注入与排序）、Reminder（`test_reminder.py`）、Hook（`test_hook.py`，环境变量/match/总线订阅）、AgentTool（`test_agent_tool.py`，前台/后台/session 复用）、核心工具（`test_tools.py`，write/read/edit 落盘 + ls/glob/grep + bash + task 生命周期，验证共享 registry 先读后编门禁）。
 - [x] 端到端真实 LLM 冒烟脚本 `python -m norma.smoke_real_llm`：读取 `~/.norma/config.json`，用真实 api_key/base_url 走非流式 `chat()` + 流式 `stream_chat()` 各一次，验证连通与解析；未配置真实 key 或不可达时 SKIP（不阻塞），可由用户在自有环境一键验证。
 
 ## P6 对齐增强（按价值择优）
@@ -73,6 +73,7 @@
 - [x] 移除 3 个遗留死 agent 模块（`functioncall_agent.py`/`repo_ase_agent.py`/`step_agent.py`）：闭环死集群，引用已删除模块且含语法错误，无存活代码引用（可从 git 历史恢复）；`walk_packages` 导入失败 3 -> 0。
 - [x] 前端硬化回归 `test_tui_render.py`（7 项）：补 `test_tui_e2e.py` 未覆盖的前端渲染正确性与交互--思考块、多工具调用、工具成功(⚙)/错误(✗)标记、流式中断(Ctrl+C)、命令路径(/help 渲染 + 未知命令提示 + /clear 不误报)、F2 权限模式循环、权限弹窗往返(UI_PROMPT->弹窗->y->True)。向真实 MessageBus 发布合成事件 + Textual pilot 抽干消息泵，复现总线->post_message->渲染全链路。
 - [x] 修复 REPL 权限确认挂起：REPL 订阅 `UI_PROMPT`，回调经可注入 `prompt_confirm`（默认 prompt_toolkit y/N）回送 `respond_confirmation`，不再 60s 超时默认拒绝。回归 `test_repl_permission.py`（allow/deny）。
+- [x] 修复 3 个导致核心工具完全不可用的致命缺陷：① BashTool 在 Windows 上 `os.setsid` AttributeError 崩溃 -> 改用 `_BASH_PREEXEC_FN`（POSIX setsid / Windows None）+ `shutil.which('bash')` 跨平台解析；② BashTool 每条命令必 120s 超时 -> 退出码标记 `echo {m}$__EXIT_CODE{m}` 被 bash 贪婪解析为未设置变量，改为 `echo "{m}$?{m}"`；③ EditTool「先读后编」门禁恒失败 -> `norma_coder` 注入共享 `read_files_registry` 传给 Read/Edit/Write，ReadTool 成功后记录、WriteTool 写入后标记。附带修复 EditTool 解析失败 `is_error=False` 笔误。回归 `test_tools.py`（4 项）。
 - [ ] Session parent_uuid 链（分支/fork，可选，价值较低）。
 - [ ] JSON stdin + exit2 阻断式 Hook（可选；当前权限系统已覆盖工具执行门禁）。
 

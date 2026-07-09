@@ -14,7 +14,7 @@
 - [x] P5 接入与打磨（MCP/skill/command 在 TUI 中可用；流式渲染；模式切换；冒烟通过）
 - [~] P6 对齐增强（按需：~~工具并发分区~~、~~compact_boundary~~、~~系统提示结构化~~、~~分层 compaction~~ 已完成；parent_uuid 链可选未做）
 
-> **当前状态（功能完整）**：P0–P5 全部完成，P6 高价值项（并发分区 / compact_boundary / 系统提示结构化 / 分层 compaction）均已完成并有 headless 回归测试。MCP/Skill/TUI/compact 四大特性经端到端回归验证。P7 进一步硬化前端、移除死代码、修复 REPL 权限挂起与 3 个核心工具致命缺陷（BashTool Windows 崩溃 + 120s 超时、EditTool 先读后编门禁失效）、BashTool 名称大小写对齐 DANGEROUS_TOOLS、`/compact` 误报成功。仅剩 parent_uuid 链（低价值可选）与真实 LLM 端到端冒烟（需可达 API，本环境不可达）。回归套件 13/13：`test_system_prompt` / `test_compact_resume` / `test_mcp_stdio` / `test_skill` / `test_tui_e2e` / `test_tui_render` / `test_repl_permission` / `test_hook` / `test_reminder` / `test_agent_tool` / `test_tools` / `test_permission` / `test_commands`，均 headless 可独立运行。
+> **当前状态（功能完整）**：P0–P5 全部完成，P6 高价值项（并发分区 / compact_boundary / 系统提示结构化 / 分层 compaction）均已完成并有 headless 回归测试。MCP/Skill/TUI/compact 四大特性经端到端回归验证。P7 进一步硬化前端、移除死代码、修复 REPL 权限挂起与 3 个核心工具致命缺陷（BashTool Windows 崩溃 + 120s 超时、EditTool 先读后编门禁失效）、BashTool 名称大小写对齐 DANGEROUS_TOOLS、`/compact` 误报成功，并实现 PreToolUse 阻断式 hook（exit 2 + JSON stdin + stderr 回喂）。仅剩 parent_uuid 链（低价值可选）与真实 LLM 端到端冒烟（需可达 API，本环境不可达）。回归套件 13/13：`test_system_prompt` / `test_compact_resume` / `test_mcp_stdio` / `test_skill` / `test_tui_e2e` / `test_tui_render` / `test_repl_permission` / `test_hook` / `test_reminder` / `test_agent_tool` / `test_tools` / `test_permission` / `test_commands`，均 headless 可独立运行。
 > **已知遗留**：`src/norma/agent/{functioncall_agent,repo_ase_agent,step_agent}.py` 为被 NormaCoder 取代的旧 repo-ASE agent 血统，引用已删除模块（`norma.core.types`/`norma.agent.core`/`norma.agent.agent`）且 `repo_ase_agent.py` 有语法错误，无任何 live 代码引用——可选清理。
 
 ## P0 现状盘点与参考研究
@@ -77,7 +77,7 @@
 - [x] 修复 BashTool 名称大小写：`name` 由 `"bash"` 改为 `"Bash"`，对齐 `DANGEROUS_TOOLS` 与全工具大小写约定，使 EDIT 模式危险工具分类真正命中（此前仅靠「未知工具 -> ASK」兜底）。新增 `test_permission.py`（5 项）锁定 mode×tool 分类矩阵。
 - [x] 修复 `/compact` 误报成功：`_do_compact` 改返回 `bool`（True 已压缩 / False 失败 memory 不变），`cmd_compact` 依据返回值如实报告；主循环两处死代码 `if compact_event: yield compact_event`（恒 None 且无事件类型）改为副作用驱动。新增 `test_commands.py`（3 项）覆盖 9 个内置命令不崩溃 + /compact 诚实上报。
 - [ ] Session parent_uuid 链（分支/fork，可选，价值较低）。
-- [ ] JSON stdin + exit2 阻断式 Hook（可选；当前权限系统已覆盖工具执行门禁）。
+- [x] JSON stdin + exit2 阻断式 Hook：`HookManager.run_pre_tool_hooks` 实现 PreToolUse 阻断语义--hook 经 stdin 收到 JSON 上下文，exit 2 阻断工具并把 stderr 回喂 LLM，`_apply_hooks` 串联在 `_apply_permission` 之后。与静态权限分工（静态模式门禁 vs 动态可脚本化门禁）。回归 `test_hook.py` 7 项（含端到端主循环：LLM 请求 Write .env -> hook 阻断 -> 文件未创建 -> stderr 回喂）。
 
 ## 提交节奏
 - 每完成一个阶段（或阶段内可独立运行的切片）-> commit + push。

@@ -123,9 +123,13 @@ REPL 订阅 `UI_PROMPT` 后用 prompt_toolkit 交互式 y/N 确认（`prompt_con
 | `session-begin`        | CLI 启动                                  | （由 cli 直接 dispatch）     |
 | `session-end`          | CLI 退出                                  | （由 cli 直接 dispatch）     |
 | `user-input`           | `UserInputManager.send_input`             | `USER_INPUT`                  |
-| `tool-execute-before`  | NormaCoder 发布工具请求事件               | `AGENT_TOOL_REQUEST`          |
+| `tool-execute-before`  | NormaCoder 执行工具**前**（同步阻断）     | （主循环直接调用，不经总线） |
 | `tool-execute-after`   | NormaCoder 发布工具结果事件               | `AGENT_TOOL_RESULT`           |
 | `agent-response`       | NormaCoder 生成最终响应                   | `AGENT_RESPONSE`              |
+
+> `tool-execute-before` 需要「阻断」语义（见 4.4），由 agent 主循环在执行工具前
+> **同步**调用 `HookManager.run_pre_tool_hooks`；若再经总线异步触发会造成重复执行，
+> 故不订阅总线。其余事件仅作通知，仍走总线。
 
 ### 4.2 配置语法
 
@@ -155,6 +159,28 @@ REPL 订阅 `UI_PROMPT` 后用 prompt_toolkit 交互式 y/N 确认（`prompt_con
 | `CONVERSATION_ID` | 会话 id                                      |
 | `TOOL_NAME`       | 工具名（仅工具相关事件）                     |
 | `USER_INPUT`      | 用户输入（仅 `user-input` 事件，截断 1KB）   |
+
+### 4.4 PreToolUse 阻断语义（exit 2 + JSON stdin + stderr 回喂）
+
+`tool-execute-before` 对齐 Claude Code 的 PreToolUse 阻断式 hook，支持静态权限
+表达不了的**动态、可脚本化**门禁（如「阻断对 `*.env` 的 Edit」「阻断含 `rm -rf`
+的 Bash」）。流程在 `NormaCoder._apply_hooks`（紧随 `_apply_permission` 之后）：
+
+1. **JSON stdin**：hook 经标准输入收到上下文
+   `{"event":"tool-execute-before","tool_name":"Edit","tool_input":{...},"conversation_id":"..."}`
+   （便于脚本做参数级判断，避免把大参数塞进环境变量）。
+2. **exit 2 = 阻断**：任一 `background=false` 的命中 hook 以 exit code 2 退出，
+   则该工具调用被阻断，其 **stderr 作为原因回喂 LLM**（构造 `ToolRequestResult`，
+   `content="blocked by hook: <stderr>"`、`is_error=True`），LLM 据此调整策略。
+   首个 exit 2 即决定阻断，后续 hook 不再执行。
+3. **exit 0 / 其它 = 放行**：exit 0 放行；其它非零退出码不阻断（仅记 warning）。
+4. **background hook 不参与阻断**：后台 hook 仍被触发以产生副作用，但无法同步等待，
+   故不影响阻断判定。
+5. **match 过滤**：`{"tool_name":"Edit"}` 命中才执行（与 4.2 一致）。
+
+> 与权限系统的分工：权限是**静态**模式门禁（plan/edit/auto + per-tool allow/deny/ask），
+> 适用于固定规则；hook 是**动态**可脚本化门禁，适用于需要运行脚本判断（如参数内容匹配）
+> 的场景。二者串联：先 `_apply_permission`（静态），再 `_apply_hooks`（动态）。
 
 ---
 

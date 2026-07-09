@@ -26,6 +26,14 @@ if str(_SRC) not in sys.path:
     sys.path.insert(0, str(_SRC))
 
 from norma.core.openai_llm import OpenAILLM  # noqa: E402
+from norma.core.llm_types import (  # noqa: E402
+    LLMRequest,
+    SystemMessage,
+    UserMessage,
+    AssistantMessage,
+    ToolMessage,
+)
+from norma.core.tool_types import ToolRequest, ToolRequestResult  # noqa: E402
 
 
 def _make_llm() -> OpenAILLM:
@@ -108,6 +116,63 @@ def test_parse_usage() -> None:
     print("[PASS] test_parse_usage")
 
 
+# ---------------- _build_messages（请求路径，与 _parse_response 对称）----------------
+
+def test_build_messages_roles_and_tool() -> None:
+    """System/User/Assistant/Tool 四类消息 -> 正确 OpenAI role。"""
+    llm = _make_llm()
+    req = ToolRequest(tool_call_id="tc1", tool_call_name="Read", tool_call_arguments={"file_path": "a.py"})
+    result = ToolRequestResult(request=req, result="FILE", content="FILE", is_error=False, execution_times=0.0)
+    msgs = [
+        SystemMessage(content="你是助手"),
+        UserMessage(content="读 a.py"),
+        AssistantMessage(content="好的", tool_calls=[req]),
+        ToolMessage(tool_result=result, content="FILE"),
+    ]
+    out = llm._build_messages(LLMRequest(messages=msgs))
+    assert out[0] == {"role": "system", "content": "你是助手"}
+    assert out[1] == {"role": "user", "content": "读 a.py"}
+    assert out[2]["role"] == "assistant"
+    assert out[3] == {"role": "tool", "tool_call_id": "tc1", "content": "FILE"}, \
+        f"ToolMessage 应映射为 role=tool + tool_call_id，实际: {out[3]}"
+    print("[PASS] test_build_messages_roles_and_tool")
+
+
+def test_build_assistant_reasoning_content_roundtrip() -> None:
+    """AssistantMessage.reason_content -> 请求 reasoning_content（与 _parse_response 反向一致）。"""
+    llm = _make_llm()
+    out = llm._build_messages(LLMRequest(messages=[
+        AssistantMessage(content="答案", reason_content="我的推理"),
+    ]))
+    assert out[0]["reasoning_content"] == "我的推理", \
+        f"reason_content 应作为 reasoning_content 发送，实际: {out[0]}"
+    print("[PASS] test_build_assistant_reasoning_content_roundtrip")
+
+
+def test_build_tool_calls_arguments_serialized() -> None:
+    """dict 参数应序列化为 JSON 字符串（OpenAI function.arguments 要求 str）。"""
+    llm = _make_llm()
+    req = ToolRequest(tool_call_id="tc1", tool_call_name="Read", tool_call_arguments={"file_path": "a.py"})
+    out = llm._build_messages(LLMRequest(messages=[AssistantMessage(content="", tool_calls=[req])]))
+    tc = out[0]["tool_calls"][0]
+    assert tc["id"] == "tc1"
+    assert tc["type"] == "function"
+    assert tc["function"]["name"] == "Read"
+    # dict -> json string
+    assert isinstance(tc["function"]["arguments"], str), "arguments 应为 str"
+    assert tc["function"]["arguments"] == '{"file_path": "a.py"}', \
+        f"dict 应序列化为 JSON 字符串，实际: {tc['function']['arguments']!r}"
+    print("[PASS] test_build_tool_calls_arguments_serialized")
+
+
+def test_build_assistant_no_content_omits_key() -> None:
+    """无 content/reason/tool_calls 的 AssistantMessage 不含 content 键（锁定现有行为）。"""
+    llm = _make_llm()
+    out = llm._build_messages(LLMRequest(messages=[AssistantMessage(content="")]))
+    assert out[0] == {"role": "assistant"}, f"空 assistant 应仅含 role，实际: {out[0]}"
+    print("[PASS] test_build_assistant_no_content_omits_key")
+
+
 def main() -> int:
     failures = 0
     for runner, name in (
@@ -116,6 +181,10 @@ def main() -> int:
         (test_parse_tool_calls_and_finish_reason, "parse_tool_calls_and_finish_reason"),
         (test_parse_tool_calls_invalid_json_falls_back_to_string, "parse_tool_calls_invalid_json"),
         (test_parse_usage, "parse_usage"),
+        (test_build_messages_roles_and_tool, "build_messages_roles_and_tool"),
+        (test_build_assistant_reasoning_content_roundtrip, "build_assistant_reasoning_content"),
+        (test_build_tool_calls_arguments_serialized, "build_tool_calls_arguments_serialized"),
+        (test_build_assistant_no_content_omits_key, "build_assistant_no_content_omits_key"),
     ):
         try:
             runner()

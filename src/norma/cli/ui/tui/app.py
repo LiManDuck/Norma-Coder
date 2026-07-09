@@ -207,9 +207,16 @@ class BusEventMessage(TextualMessage):
 class TurnFinishedMessage(TextualMessage):
     """一次 Agent 执行结束（正常或异常）。"""
 
-    def __init__(self, ok: bool, error: Optional[str] = None) -> None:
+    def __init__(
+        self,
+        ok: bool,
+        error: Optional[str] = None,
+        interrupted: bool = False,
+    ) -> None:
         self.ok = ok
         self.error = error
+        # 用户主动中断（Ctrl+C）与真实异常区分：中断用中性提示，异常用红字 ✗
+        self.interrupted = interrupted
         super().__init__()
 
 
@@ -598,7 +605,9 @@ class NormaApp(App):
             task.result()
         except asyncio.CancelledError:
             ok = False
-            self.post_message(TurnFinishedMessage(ok=False, error="已中断"))
+            self.post_message(
+                TurnFinishedMessage(ok=False, error="已中断", interrupted=True)
+            )
             return
         except Exception as exc:  # noqa: BLE001
             ok = False
@@ -608,7 +617,10 @@ class NormaApp(App):
     async def on_turn_finished_message(self, message: TurnFinishedMessage) -> None:
         if self._stream_active:
             self._commit_stream()
-        if not message.ok:
+        if message.interrupted:
+            # 用户主动中断：中性提示，不用红字 ✗ 避免误示为异常
+            self._write_history(Text("⚠ 已中断当前任务", style="yellow"))
+        elif not message.ok:
             self._write_history(
                 Text(
                     f"✗ 任务结束（异常）: {message.error or ''}",

@@ -569,6 +569,57 @@ async def test_unexpected_error_surfaced() -> None:
         await bus.stop()
 
 
+async def test_interrupt_vs_error_message_distinct() -> None:
+    """主动中断 vs 真实异常分流渲染：中断显示中性「⚠ 已中断」，异常才显示红字「✗ 任务结束（异常）」。
+
+    回归点：``TurnFinishedMessage(interrupted=True)``（CancelledError 路径）与
+    ``interrupted=False``（真实异常）在 ``on_turn_finished_message`` 中分流--此前
+    中断也显示红字「✗ 任务结束（异常）: 已中断」，对用户主动操作过于刺眼。
+    """
+    from norma.cli.ui.tui.app import NormaApp, TurnFinishedMessage
+    from norma.messagebus.messagebus import MessageBus, UserInputManager
+
+    bus = MessageBus()
+    await bus.start()
+    uim = UserInputManager(bus)
+
+    class _NoopAgent:
+        permission_checker = None
+        llm = types.SimpleNamespace(model="stub")
+        session_manager = None
+
+    app = NormaApp(
+        agent=_NoopAgent(), cwd=".", message_bus=bus, user_input_manager=uim
+    )
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            recorded = _install_recorder(app)
+
+            # 主动中断路径
+            app.post_message(
+                TurnFinishedMessage(ok=False, error="已中断", interrupted=True)
+            )
+            for _ in range(20):
+                await pilot.pause(delay=0.05)
+            joined = "\n".join(recorded)
+            assert "已中断" in joined, f"中断应显示中性提示，实际: {joined!r}"
+            assert "异常" not in joined, f"主动中断不应显示「异常」字样，实际: {joined!r}"
+
+            # 真实异常路径
+            app.post_message(
+                TurnFinishedMessage(ok=False, error="boom", interrupted=False)
+            )
+            for _ in range(20):
+                await pilot.pause(delay=0.05)
+            joined2 = "\n".join(recorded)
+            assert "异常" in joined2 and "boom" in joined2, (
+                f"真实异常应显示「✗ 任务结束（异常）: boom」，实际: {joined2!r}"
+            )
+    finally:
+        await bus.stop()
+
+
 async def _amain() -> int:
     tests = [
         ("think_block_render", test_think_block_render),
@@ -583,6 +634,7 @@ async def _amain() -> int:
         ("error_response_rendered", test_error_response_rendered),
         ("error_shown_after_partial_stream", test_error_shown_after_partial_stream),
         ("unexpected_error_surfaced", test_unexpected_error_surfaced),
+        ("interrupt_vs_error_message_distinct", test_interrupt_vs_error_message_distinct),
     ]
     failures = 0
     for name, fn in tests:

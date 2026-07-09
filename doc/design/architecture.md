@@ -1,8 +1,9 @@
 # Norma-Coder 目标架构设计
 
-> 状态：TUI 打通 + 前后端事件解耦 + 真正流式 **已实现**（P1–P5 完成，P6 部分完成）。
+> 状态：TUI 打通 + 前后端事件解耦 + 真正流式 + 前端硬化 **已实现**（P0–P5 完成，P6 高价值项完成，P7 硬化完成；回归 14/14）。
 > Textual TUI（`cli/ui/tui/app.py`）订阅进程内 MessageBus 渲染；Agent 经 `AgentRunner` 后台驱动，
-> 事件经总线发布；ASK 确认弹层闭环；流式 delta 实时渲染。详见 §3 与 `doc/refactor_plan.md`。
+> 事件经总线发布；ASK 确认弹层闭环；流式 delta 实时渲染；Markdown 落盘渲染 + 错误可见 + 多行粘贴保留。
+> 详见 §3 与 `doc/refactor_plan.md`。
 
 ## 1. 设计目标（来自 `doc/项目重构总体规划.md`）
 
@@ -22,13 +23,13 @@
 | MCP | `mcp/{client,tool,manager}.py` | stdio JSON-RPC，可用 |
 | Session | `session/session.py` | jsonl 持久化 + /resume + --resume |
 | 权限 | `permission/permission.py` | plan/edit/auto + per-tool |
-| Hook | 子进程 env 注入 + JSON stdin + exit2=block | env 注入已实现并回归验证（dispatch/匹配/总线订阅）；JSON stdin + exit2 阻断可选 |
+| Hook | 子进程 env 注入 + JSON stdin + exit2=block | env 注入 + PreToolUse exit2 阻断（JSON stdin + stderr 回喂）均已实现并回归验证 |
 | Reminder | `reminder/*` | `<system-reminder>` 注入 |
 | Skill | `skill/skill.py` | ~/.norma/skills + cwd/.norma/skills |
 | Command | `cli/command/*` | /new /help /exit /clear /model /compact /status /resume /session |
 | MessageBus | `messagebus/messagebus.py` | pub/sub + UserInputManager + AgentMessageAdapter；TUI 订阅渲染，ASK 闭环 |
 | LLM | `core/openai_llm.py` | chat() + stream_chat()（逐 chunk 增量 yield）；`stream_mode` 由 config 控制 |
-| Compaction | `norma_coder._do_compact` | 单层 LLM 摘要 |
+| Compaction | `norma_coder._do_compact` / `_micro_compact` | 分层：微压缩（无 LLM 截断旧 tool_result，保留近 N 条）先行，仍超阈值再完整 LLM 摘要 |
 
 ### 2.2 重构缺口（已全部解决）
 1. **前端 TUI** ✅：新增 `cli/ui/tui/app.py`（Textual 8.x），`cli.py` 默认启动 TUI，`--repl` 兜底。
@@ -99,7 +100,7 @@
 | 工具调用 | is_concurrency_safe 元数据（只读并发/写串行）| 已分区：只读 gather 并发、写串行，结果按原序（Tool.is_readonly + execute_tools） |
 | tool_result 块 | {tool_use_id, content, is_error} | 已具备 |
 | 权限 | modes + allow/deny/ask + bypass-immune | plan/edit/auto + per-tool → 可补规则 glob |
-| Hook | 子进程，JSON stdin，exit2=block | 子进程 env 注入 → 可补 JSON stdin/exit2 |
+| Hook | 子进程，JSON stdin，exit2=block | 子进程 env 注入 → 已实现 JSON stdin/exit2 阻断（回归验证） |
 | Skill | name/SKILL.md + inline/fork | 已具备 frontmatter+body + 子agent |
 | MCP | mcp__server__tool 命名 | 已实现 mcp__server__tool 前缀（MCPTool），并回归验证 |
 | Session | jsonl + parent_uuid 链 + compact_boundary | jsonl 已具备 compact_boundary（压缩边界持久化 + restore 跳过边界前重放）；parent_uuid 链可选 |

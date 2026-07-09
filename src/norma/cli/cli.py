@@ -48,11 +48,19 @@ from norma.session import SessionManager
 class NormaCLI:
     """Norma AI Agent 命令行界面的主控制器"""
 
-    def __init__(self, resume_session: Optional[str] = None):
+    def __init__(
+        self,
+        resume_session: Optional[str] = None,
+        model_override: Optional[str] = None,
+        config_path: Optional[str] = None,
+    ):
         self.console = Console()
         self.agent: Optional[BaseAgent] = None
         self.llm: Optional[OpenAILLM] = None
-        self.config = self.load_config()
+        self.config = self.load_config(config_path=config_path)
+        # --model 覆盖配置中的模型名（优先级高于配置文件）
+        if model_override:
+            self.config["model"] = model_override
         self.resume_session = resume_session
         self._setup_proxy()
 
@@ -104,8 +112,9 @@ class NormaCLI:
         os.environ['NO_PROXY'] = ','.join(no_proxy_list)
         os.environ['no_proxy'] = os.environ['NO_PROXY']
 
-    def load_config(self) -> dict:
-        config_path = Path.home() / ".norma" / "config.json"
+    def load_config(self, config_path: Optional[str] = None) -> dict:
+        from norma.session.session import get_config_home
+
         default_config = {
             "model": "glm-4.5-air",
             "api_key": "sk-1234",
@@ -119,19 +128,38 @@ class NormaCLI:
             "providers": {},
             "mcpServers": {},
         }
-        if config_path.exists():
+
+        # --config 显式指定：仅读取，缺失时不自动创建（避免在任意路径落盘）
+        if config_path:
+            cp = Path(config_path).expanduser()
+            if cp.exists():
+                try:
+                    with open(cp, 'r', encoding='utf-8') as f:
+                        file_config = json.loads(f.read().strip())
+                    default_config.update(file_config)
+                except Exception as e:
+                    self.console.print(f"[red]读取配置文件失败: {e}[/red]")
+            else:
+                self.console.print(
+                    f"[yellow]配置文件不存在: {cp}，使用默认配置[/yellow]"
+                )
+            return default_config
+
+        # 默认：~/.norma/config.json（受 NORMA_CONFIG_HOME 覆盖，与 session 存储一致）
+        config_path_obj = get_config_home() / "config.json"
+        if config_path_obj.exists():
             try:
-                with open(config_path, 'r', encoding='utf-8') as f:
+                with open(config_path_obj, 'r', encoding='utf-8') as f:
                     file_config = json.loads(f.read().strip())
                 default_config.update(file_config)
             except Exception as e:
                 self.console.print(f"[red]读取配置文件失败: {e}[/red]")
         else:
             try:
-                config_path.parent.mkdir(exist_ok=True, parents=True)
-                with open(config_path, 'w', encoding='utf-8') as f:
+                config_path_obj.parent.mkdir(exist_ok=True, parents=True)
+                with open(config_path_obj, 'w', encoding='utf-8') as f:
                     json.dump(default_config, f, indent=2, ensure_ascii=False)
-                self.console.print(f"[green]已创建配置文件: {config_path}[/green]")
+                self.console.print(f"[green]已创建配置文件: {config_path_obj}[/green]")
             except Exception as e:
                 self.console.print(
                     f"[yellow]创建配置文件失败: {e}，使用默认配置[/yellow]"
@@ -304,7 +332,11 @@ def main():
     args = parser.parse_args()
 
     try:
-        cli = NormaCLI(resume_session=args.resume)
+        cli = NormaCLI(
+            resume_session=args.resume,
+            model_override=args.model,
+            config_path=args.config,
+        )
         asyncio.run(cli.run(use_repl=args.repl))
     except KeyboardInterrupt:
         print("\n\n程序已退出")

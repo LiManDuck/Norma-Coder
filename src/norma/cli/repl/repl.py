@@ -196,22 +196,26 @@ class NormaREPL:
             bool: True 表示继续运行，False 表示退出
         """
         ctx = CommandContext(repl=self, args=raw_input)
-        result = await self.command_registry.execute(ctx)
+        parts = raw_input.split(maxsplit=1)
+        cmd_name = parts[0].lstrip("/") if parts else ""
 
-        # /exit 命令返回 False
-        if result is False:
-            self.running = False
-            return False
-
-        # 命令不存在
-        if result is None:
-            cmd_name = raw_input.split()[0].lstrip("/")
+        # 先查表：未知命令直接提示，避免与「命令正常返回 None」混淆
+        if not self.command_registry.lookup(cmd_name):
             print_formatted_text(
                 HTML(f"<style fg='ansired'>未知命令: /{cmd_name}</style>")
             )
             print_formatted_text(
                 HTML("<style fg='#888888'>输入 /help 查看可用命令</style>")
             )
+            print()
+            return True
+
+        result = await self.command_registry.execute(ctx)
+
+        # /exit 命令返回 False
+        if result is False:
+            self.running = False
+            return False
 
         print()
         return True

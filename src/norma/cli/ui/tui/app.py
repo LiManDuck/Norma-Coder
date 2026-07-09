@@ -526,6 +526,12 @@ class NormaApp(App):
             self._start_agent(text)
 
     async def _handle_command(self, raw: str) -> None:
+        parts = raw.split(maxsplit=1)
+        cmd_name = parts[0].lstrip("/") if parts else ""
+        if not self.command_registry.lookup(cmd_name):
+            self._write_history(Text(f"未知命令: /{cmd_name}", style="red"))
+            self._write_history(Text("输入 /help 查看可用命令", style="dim"))
+            return
         ctx = CommandContext(repl=self, args=raw)
         try:
             result = await self.command_registry.execute(ctx)

@@ -268,6 +268,41 @@ async def test_interrupt_mid_stream() -> None:
         await cli.message_bus.stop()
 
 
+async def test_command_paths() -> None:
+    """/help 渲染帮助、/foobar 给出未知命令提示、/clear 不误报未知命令。"""
+    app, bus, _uim = await _build_app()
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            recorded = _install_recorder(app)
+
+            # /help -> 帮助文本，且不被误报为「未知命令」
+            app.query_one("#input").value = "/help"
+            await pilot.press("enter")
+            await _drain(pilot, bus)
+            joined = "\n".join(recorded)
+            assert "可用命令" in joined, f"帮助文本缺失: {joined!r}"
+            assert "未知命令" not in joined, "/help 被误报为未知命令"
+
+            # /foobar -> 未知命令提示
+            recorded.clear()
+            app.query_one("#input").value = "/foobar"
+            await pilot.press("enter")
+            await _drain(pilot, bus)
+            joined = "\n".join(recorded)
+            assert "未知命令" in joined and "foobar" in joined, f"未知命令提示缺失: {joined!r}"
+
+            # /clear -> 清屏，不误报未知命令（cmd_clear 仅调用 clear_screen，不打印）
+            recorded.clear()
+            app.query_one("#input").value = "/clear"
+            await pilot.press("enter")
+            await _drain(pilot, bus)
+            joined = "\n".join(recorded)
+            assert "未知命令" not in joined, "/clear 被误报为未知命令"
+    finally:
+        await bus.stop()
+
+
 async def test_permission_modal_roundtrip() -> None:
     """UI_PROMPT -> 权限弹窗 -> 按 y -> request_confirmation 返回 True。"""
     from norma.messagebus.messagebus import Message, MessageType
@@ -308,6 +343,7 @@ async def _amain() -> int:
         ("multi_tool_call_render", test_multi_tool_call_render),
         ("tool_error_and_success_render", test_tool_error_and_success_render),
         ("interrupt_mid_stream", test_interrupt_mid_stream),
+        ("command_paths", test_command_paths),
         ("permission_modal_roundtrip", test_permission_modal_roundtrip),
     ]
     failures = 0

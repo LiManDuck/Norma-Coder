@@ -306,50 +306,6 @@ class AgentMessageAdapter:
         await self.message_bus.publish(message)
 
 
-# ==================== UI渲染器 ====================
-
-class UIRenderer:
-    """
-    UI渲染器
-    订阅Agent消息并渲染到界面
-    """
-    
-    def __init__(self, message_bus: MessageBus, agent_renderer):
-        self.message_bus = message_bus
-        self.agent_renderer = agent_renderer
-        
-        # 订阅需要渲染的消息类型
-        render_types = [
-            MessageType.AGENT_THINK,
-            MessageType.AGENT_TOOL_REQUEST,
-            MessageType.AGENT_TOOL_RESULT,
-            MessageType.AGENT_LLM_RESPONSE,
-            MessageType.AGENT_RESPONSE,
-            MessageType.UI_PROMPT,
-        ]
-        
-        for msg_type in render_types:
-            self.message_bus.subscribe(msg_type, self.render_message)
-    
-    async def render_message(self, message: Message):
-        """渲染单个消息"""
-        from prompt_toolkit import print_formatted_text
-        
-        if message.msg_type == MessageType.UI_PROMPT:
-            # 特殊处理确认提示
-            prompt = message.payload.get("prompt", "")
-            formatted = self.agent_renderer.render_confirmation_prompt(prompt)
-            print_formatted_text(formatted)
-        else:
-            # 使用现有的渲染器
-            event = message.payload
-            formatted = self.agent_renderer.render_event(
-                event_type=message.msg_type.value,
-                content=event
-            )
-            print_formatted_text(formatted)
-
-
 # ==================== 使用示例 ====================
 
 async def example_usage():

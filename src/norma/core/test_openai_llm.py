@@ -1,15 +1,29 @@
-"""OpenAILLM 响应解析回归测试。
+"""OpenAILLM I/O 回归测试（parse / build / stream 三路径）。
 
-锁定 ``_parse_response``（非流式）的关键正确性：
-1. ``reasoning_content`` 必须透传到 ``AssistantMessage.reason_content``
+锁定 LLM 层三个此前无回归覆盖的关键路径（真实 LLM 因占位 key 不可达，长期无保护）：
+
+``_parse_response``（非流式响应解析）：
+1. ``reasoning_content`` 透传到 ``AssistantMessage.reason_content``
    （此前漏传，导致默认 ``stream_mode=False`` 下思考模型推理被丢弃；
    TUI 非流式分支会读 ``response_message.reason_content``）。
 2. 空 ``choices`` 不崩溃（与流式路径一致）。
 3. ``tool_calls`` 解析 + ``finish_reason`` 映射。
 4. ``usage`` 透传。
 
-``_parse_response`` 仅访问 completion 的属性，故用 ``SimpleNamespace`` 构造假响应，
-无需真实网络。``OpenAILLM.__init__`` 只本地构造 client，离线可用。
+``_build_messages``（请求构造，与 parse 反向对称）：
+- 四类消息 role 映射 + ToolMessage -> role=tool+tool_call_id
+- AssistantMessage.reason_content -> 请求 reasoning_content
+- dict 参数序列化为 JSON 字符串 / 空 assistant 不含 content 键
+
+``stream_chat``（流式累积，此前完全由桩替换、未测真实累积）：
+- 文本增量逐 chunk yield + 最终累积
+- reasoning_content 累积
+- tool_calls 跨 chunk 分片拼接
+- usage 在无 choices 的尾部 chunk 到达
+
+parse/build 用 ``SimpleNamespace`` 假对象；stream 用 ``_FakeStream`` 假 async 流
+替换 ``llm.client.chat.completions.create``。均无需真实网络。
+``OpenAILLM.__init__`` 只本地构造 client，离线可用。
 
 运行：``python -m norma.core.test_openai_llm``
 """
@@ -17,6 +31,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -173,6 +188,130 @@ def test_build_assistant_no_content_omits_key() -> None:
     print("[PASS] test_build_assistant_no_content_omits_key")
 
 
+# ---------------- stream_chat（流式累积，此前完全由桩替换、未测真实累积）----------------
+
+class _FakeStream:
+    """假 async 流：逐个 yield 预构造 chunk。"""
+
+    def __init__(self, chunks):
+        self._chunks = list(chunks)
+        self._i = 0
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        if self._i >= len(self._chunks):
+            raise StopAsyncIteration
+        c = self._chunks[self._i]
+        self._i += 1
+        return c
+
+
+def _delta(content=None, reasoning=None, tool_calls=None):
+    return SimpleNamespace(content=content, reasoning_content=reasoning, tool_calls=tool_calls)
+
+
+def _tc_delta(index, id=None, name=None, arguments=None):
+    return SimpleNamespace(
+        index=index, id=id, function=SimpleNamespace(name=name, arguments=arguments)
+    )
+
+
+def _chunk(delta=None, finish_reason=None, usage=None, choices=None):
+    if choices is not None:
+        ch = choices
+    else:
+        ch = [SimpleNamespace(delta=delta or _delta(), finish_reason=finish_reason)]
+    return SimpleNamespace(choices=ch, usage=usage)
+
+
+def _patch_stream(llm: OpenAILLM, chunks) -> None:
+    """把 llm.client 换成返回假流的桩（stream_chat 经 await create(...) 拿流）。"""
+    async def _fake_create(**kwargs):
+        return _FakeStream(chunks)
+
+    llm.client = SimpleNamespace(
+        chat=SimpleNamespace(
+            completions=SimpleNamespace(create=_fake_create)
+        )
+    )
+
+
+async def test_stream_text_accumulation() -> None:
+    """文本增量逐 chunk yield，最终 response_message.content 为累积全文。"""
+    llm = _make_llm()
+    chunks = [
+        _chunk(delta=_delta(content="Hello")),
+        _chunk(delta=_delta(content=" world")),
+        _chunk(delta=_delta(), finish_reason="stop"),
+    ]
+    _patch_stream(llm, chunks)
+    results = [r async for r in llm.stream_chat(LLMRequest(messages=[UserMessage(content="hi")]))]
+    deltas, final = results[:-1], results[-1]
+    assert [d.stream_content for d in deltas] == ["Hello", " world"], \
+        f"增量应逐 chunk yield，实际: {[d.stream_content for d in deltas]}"
+    assert final.response_message.content == "Hello world", \
+        f"最终 content 应累积，实际: {final.response_message.content!r}"
+    assert final.finish_reason == "stop"
+    print("[PASS] test_stream_text_accumulation")
+
+
+async def test_stream_reasoning_accumulation() -> None:
+    """reasoning_content 增量累积到最终 response_message.reason_content。"""
+    llm = _make_llm()
+    chunks = [
+        _chunk(delta=_delta(reasoning="思考1")),
+        _chunk(delta=_delta(reasoning="思考2", content="答案")),
+        _chunk(delta=_delta(), finish_reason="stop"),
+    ]
+    _patch_stream(llm, chunks)
+    results = [r async for r in llm.stream_chat(LLMRequest(messages=[UserMessage(content="hi")]))]
+    final = results[-1]
+    assert final.response_message.reason_content == "思考1思考2", \
+        f"reason_content 应累积，实际: {final.response_message.reason_content!r}"
+    assert final.response_message.content == "答案"
+    print("[PASS] test_stream_reasoning_accumulation")
+
+
+async def test_stream_tool_calls_split_across_chunks() -> None:
+    """tool_calls 跨 chunk 分片：首片含 id+name，后续片含 arguments 片段，应拼接后解析。"""
+    llm = _make_llm()
+    chunks = [
+        _chunk(delta=_delta(tool_calls=[_tc_delta(0, id="call_1", name="Read", arguments='{"file":"')])),
+        _chunk(delta=_delta(tool_calls=[_tc_delta(0, arguments='a.py"}')])),
+        _chunk(delta=_delta(), finish_reason="tool_calls"),
+    ]
+    _patch_stream(llm, chunks)
+    results = [r async for r in llm.stream_chat(LLMRequest(messages=[UserMessage(content="read a.py")]))]
+    final = results[-1]
+    assert final.finish_reason == "tool_calls"
+    tcs = final.tool_calls
+    assert tcs and len(tcs) == 1
+    assert tcs[0].tool_call_id == "call_1"
+    assert tcs[0].tool_call_name == "Read"
+    assert tcs[0].tool_call_arguments == {"file": "a.py"}, \
+        f"分片 arguments 应拼接后解析为 dict，实际: {tcs[0].tool_call_arguments!r}"
+    print("[PASS] test_stream_tool_calls_split_across_chunks")
+
+
+async def test_stream_usage_in_trailing_chunk() -> None:
+    """usage 可能在无 choices 的末尾 chunk 到达（stream_options include_usage）。"""
+    llm = _make_llm()
+    usage = SimpleNamespace(prompt_tokens=50, completion_tokens=25)
+    chunks = [
+        _chunk(delta=_delta(content="hi")),
+        _chunk(delta=_delta(), finish_reason="stop"),
+        _chunk(choices=[], usage=usage),
+    ]
+    _patch_stream(llm, chunks)
+    results = [r async for r in llm.stream_chat(LLMRequest(messages=[UserMessage(content="hi")]))]
+    final = results[-1]
+    assert final.prompt_tokens == 50, f"usage 应从尾部 chunk 捕获，实际: {final.prompt_tokens}"
+    assert final.completion_tokens == 25
+    print("[PASS] test_stream_usage_in_trailing_chunk")
+
+
 def main() -> int:
     failures = 0
     for runner, name in (
@@ -185,9 +324,16 @@ def main() -> int:
         (test_build_assistant_reasoning_content_roundtrip, "build_assistant_reasoning_content"),
         (test_build_tool_calls_arguments_serialized, "build_tool_calls_arguments_serialized"),
         (test_build_assistant_no_content_omits_key, "build_assistant_no_content_omits_key"),
+        (test_stream_text_accumulation, "stream_text_accumulation"),
+        (test_stream_reasoning_accumulation, "stream_reasoning_accumulation"),
+        (test_stream_tool_calls_split_across_chunks, "stream_tool_calls_split"),
+        (test_stream_usage_in_trailing_chunk, "stream_usage_in_trailing_chunk"),
     ):
         try:
-            runner()
+            if inspect.iscoroutinefunction(runner):
+                asyncio.run(runner())
+            else:
+                runner()
         except AssertionError as exc:
             print(f"[FAIL] {name}: {exc}")
             failures += 1
@@ -199,7 +345,7 @@ def main() -> int:
     if failures:
         print(f"\n{failures} test(s) failed")
         return 1
-    print("\nALL openai_llm parse tests passed")
+    print("\nALL openai_llm tests passed (parse + build + stream)")
     return 0
 
 

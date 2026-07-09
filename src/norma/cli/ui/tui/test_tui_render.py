@@ -1,0 +1,340 @@
+"""NormaApp 前端渲染与交互回归测试（headless）。
+
+补充 ``test_tui_e2e.py``：后者只验证 LLM 调用计数与运行状态，本文件聚焦
+**前端**本身（用户的首要优先级「打通前端实现」）：
+
+1. 渲染正确性——思考块、多工具调用、工具成功/错误标记都正确落到历史区。
+2. 交互——流式中断（Ctrl+C）能干净收尾并恢复输入框。
+3. 权限弹窗往返——``UI_PROMPT`` -> 弹窗 -> 按 ``y`` -> ``USER_CONFIRM`` ->
+   ``request_confirmation`` 的 future 解析为 ``True``。
+
+渲染测试通过向真实 ``MessageBus`` 发布合成事件、再让 Textual pilot 抽干
+消息泵来驱动，完整复现「总线回调 -> post_message -> on_bus_event_message ->
+_write_history」链路。唯一记录点是包装 ``_write_history`` 收集每条渲染产物
+的纯文本。
+
+运行：``python -m norma.cli.ui.tui.test_tui_render``
+"""
+
+from __future__ import annotations
+
+import asyncio
+import types
+from typing import Optional
+
+
+# =====================================================================
+# 流式 chunk 构造（与真实 OpenAI ChatCompletionChunk 同构）
+# =====================================================================
+
+def _chunk(content=None, tc=None, finish=None, reasoning=None, usage=None):
+    delta = types.SimpleNamespace(
+        content=content, reasoning_content=reasoning, tool_calls=tc
+    )
+    choice = types.SimpleNamespace(delta=delta, finish_reason=finish)
+    return types.SimpleNamespace(usage=usage, choices=[choice])
+
+
+class _SlowCompletions:
+    """永不结束的流式响应：先吐一个增量，随后无限 sleep。
+
+    用于中断测试——agent 会一直停在 ``async for chunk in self.llm(...)``，
+    直到被 Ctrl+C 取消。
+    """
+
+    async def create(self, **kw):
+        async def gen():
+            yield _chunk(content="正在", finish=None)
+            while True:
+                await asyncio.sleep(0.3)
+                yield _chunk(content="…", finish=None)
+
+        return gen()
+
+
+class _SlowClient:
+    def __init__(self):
+        self.chat = types.SimpleNamespace(completions=_SlowCompletions())
+
+
+# =====================================================================
+# 辅助
+# =====================================================================
+
+def _install_recorder(app) -> list[str]:
+    """包装 app._write_history，收集每条渲染产物的纯文本。"""
+    recorded: list[str] = []
+    orig = app._write_history
+
+    def _rec(renderable) -> None:
+        recorded.append(getattr(renderable, "plain", str(renderable)))
+        orig(renderable)
+
+    app._write_history = _rec
+    return recorded
+
+
+async def _build_app():
+    """最小化 app（桩 agent），用于纯渲染/弹窗测试，避免 NormaCLI 重量级装配。"""
+    from norma.cli.ui.tui.app import NormaApp
+    from norma.messagebus.messagebus import MessageBus, UserInputManager
+
+    bus = MessageBus()
+    await bus.start()
+    uim = UserInputManager(bus)
+    stub_agent = types.SimpleNamespace(
+        permission_checker=None,
+        llm=types.SimpleNamespace(model="stub"),
+        session_manager=None,
+    )
+    app = NormaApp(
+        agent=stub_agent, cwd=".", message_bus=bus, user_input_manager=uim
+    )
+    return app, bus, uim
+
+
+async def _drain(pilot, bus) -> None:
+    """发布后抽干总线处理器 + Textual 消息泵。"""
+    await pilot.pause(delay=0.2)
+    await pilot.pause(delay=0.05)
+
+
+# =====================================================================
+# 测试
+# =====================================================================
+
+async def test_think_block_render() -> None:
+    """流式推理增量 + LLM 响应收尾 -> 历史区出现思考块。"""
+    from norma.core.agent_types import (
+        AgentThinkDeltaEvent,
+        AgentLLMResponseEvent,
+        AgentResponse,
+    )
+    from norma.core.llm_types import LLMResponse, AssistantMessage
+    from norma.messagebus.messagebus import Message, MessageType
+
+    app, bus, _uim = await _build_app()
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            recorded = _install_recorder(app)
+
+            await bus.publish(Message(
+                msg_type=MessageType.AGENT_THINK_DELTA,
+                payload=AgentThinkDeltaEvent(agent_name="t", delta="先思考一下"),
+            ))
+            await _drain(pilot, bus)
+
+            await bus.publish(Message(
+                msg_type=MessageType.AGENT_LLM_RESPONSE,
+                payload=AgentLLMResponseEvent(
+                    agent_name="t",
+                    response=LLMResponse(
+                        response_message=AssistantMessage(content="", tool_calls=None),
+                        finish_reason="stop",
+                    ),
+                ),
+            ))
+            await _drain(pilot, bus)
+
+            await bus.publish(Message(
+                msg_type=MessageType.AGENT_RESPONSE,
+                payload=AgentResponse(
+                    agent_name="t", input_message=[], tools=None,
+                    prompt_usage=None, event_list=[], message_list=[],
+                ),
+            ))
+            await _drain(pilot, bus)
+
+            joined = "\n".join(recorded)
+            assert "思考" in joined, f"思考块缺失: {joined!r}"
+            assert "先思考一下" in joined, f"推理内容缺失: {joined!r}"
+            assert "─" in joined, f"回合分隔符缺失: {joined!r}"
+    finally:
+        await bus.stop()
+
+
+async def test_multi_tool_call_render() -> None:
+    """一次工具请求含多个 tool_calls -> 每个 都独立渲染一行。"""
+    from norma.core.agent_types import AgentToolRequestEvent
+    from norma.core.tool_types import ToolRequest
+    from norma.messagebus.messagebus import Message, MessageType
+
+    app, bus, _uim = await _build_app()
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            recorded = _install_recorder(app)
+
+            tcs = [
+                ToolRequest(tool_call_id="c1", tool_call_name="Ls",
+                            tool_call_arguments={"path": "."}),
+                ToolRequest(tool_call_id="c2", tool_call_name="Read",
+                            tool_call_arguments={"path": "a.py"}),
+            ]
+            await bus.publish(Message(
+                msg_type=MessageType.AGENT_TOOL_REQUEST,
+                payload=AgentToolRequestEvent(
+                    agent_name="t", tool_calls=tcs, tool_execution_results=[]
+                ),
+            ))
+            await _drain(pilot, bus)
+
+            tool_lines = [r for r in recorded if "🛠" in r]
+            assert len(tool_lines) == 2, f"应渲染 2 行工具调用，实际 {len(tool_lines)}: {recorded!r}"
+            joined = "\n".join(recorded)
+            assert "Ls" in joined and "Read" in joined
+    finally:
+        await bus.stop()
+
+
+async def test_tool_error_and_success_render() -> None:
+    """工具结果中 is_error=True 渲染 ✗，is_error=False 渲染 ⚙。"""
+    from norma.core.agent_types import AgentToolRequestAnswerEvent
+    from norma.core.tool_types import ToolRequest, ToolRequestResult
+    from norma.messagebus.messagebus import Message, MessageType
+
+    app, bus, _uim = await _build_app()
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            recorded = _install_recorder(app)
+
+            err = ToolRequestResult(
+                request=ToolRequest(tool_call_id="c1", tool_call_name="Ls",
+                                    tool_call_arguments={"path": "."}),
+                result=None, content="boom: 不存在", is_error=True,
+            )
+            ok = ToolRequestResult(
+                request=ToolRequest(tool_call_id="c2", tool_call_name="Read",
+                                    tool_call_arguments={"path": "a.py"}),
+                result={"n": 1}, content="ok", is_error=False,
+            )
+            await bus.publish(Message(
+                msg_type=MessageType.AGENT_TOOL_RESULT,
+                payload=AgentToolRequestAnswerEvent(
+                    agent_name="t", tool_execution_results=[err, ok]
+                ),
+            ))
+            await _drain(pilot, bus)
+
+            joined = "\n".join(recorded)
+            assert "✗" in joined, f"错误标记 ✗ 缺失: {joined!r}"
+            assert "⚙" in joined, f"成功标记 ⚙ 缺失: {joined!r}"
+            assert "boom: 不存在" in joined, f"错误内容缺失: {joined!r}"
+    finally:
+        await bus.stop()
+
+
+async def test_interrupt_mid_stream() -> None:
+    """流式输出过程中 Ctrl+C -> agent 任务取消、输入框恢复可用。"""
+    from norma.cli.cli import NormaCLI
+    from norma.cli.ui.tui.app import NormaApp
+
+    cli = NormaCLI()
+    cli.llm.default_stream_mode = True
+    cli.llm.client = _SlowClient()
+    await cli.message_bus.start()
+    try:
+        app = NormaApp(
+            agent=cli.agent, cwd=".", message_bus=cli.message_bus,
+            user_input_manager=cli.user_input_manager,
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#input").value = "慢慢回答"
+            await pilot.press("enter")
+
+            # 等待 agent 进入流式（running 变 True）
+            running_seen = False
+            for _ in range(30):
+                await pilot.pause(delay=0.1)
+                if app._is_running():
+                    running_seen = True
+                    break
+            assert running_seen, "agent 未进入运行态，无法测试中断"
+
+            # 中断
+            await pilot.press("ctrl+c")
+            for _ in range(40):
+                await pilot.pause(delay=0.1)
+                if not app._is_running():
+                    break
+
+            assert not app._is_running(), "中断后 agent 仍在运行"
+            inp = app.query_one("#input")
+            assert not inp.disabled, "中断后输入框未恢复"
+    finally:
+        await cli.message_bus.stop()
+
+
+async def test_permission_modal_roundtrip() -> None:
+    """UI_PROMPT -> 权限弹窗 -> 按 y -> request_confirmation 返回 True。"""
+    from norma.messagebus.messagebus import Message, MessageType
+    from norma.cli.ui.tui.app import PermissionModal
+
+    app, bus, uim = await _build_app()
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+
+            # 后台发起确认请求 -> 总线发布 UI_PROMPT -> 弹窗
+            fut = asyncio.ensure_future(
+                uim.request_confirmation("允许执行 X?", "conv1", timeout=5)
+            )
+
+            modal_up = False
+            for _ in range(30):
+                await pilot.pause(delay=0.1)
+                if isinstance(app.screen, PermissionModal):
+                    modal_up = True
+                    break
+            assert modal_up, f"权限弹窗未弹出，当前 screen={app.screen!r}"
+
+            await pilot.press("y")
+            result = await asyncio.wait_for(fut, timeout=3)
+            assert result is True, f"确认应返回 True，实际 {result!r}"
+    finally:
+        await bus.stop()
+
+
+# =====================================================================
+# 入口
+# =====================================================================
+
+async def _amain() -> int:
+    tests = [
+        ("think_block_render", test_think_block_render),
+        ("multi_tool_call_render", test_multi_tool_call_render),
+        ("tool_error_and_success_render", test_tool_error_and_success_render),
+        ("interrupt_mid_stream", test_interrupt_mid_stream),
+        ("permission_modal_roundtrip", test_permission_modal_roundtrip),
+    ]
+    failures = 0
+    for name, fn in tests:
+        try:
+            await fn()
+            print(f"PASS  {name}")
+        except Exception as e:  # noqa: BLE001
+            failures += 1
+            import traceback
+            print(f"FAIL  {name}: {e}")
+            traceback.print_exc()
+    print(f"=== {len(tests) - failures}/{len(tests)} passed ===")
+    return 1 if failures else 0
+
+
+def test_tui_render_headless() -> None:
+    """pytest 入口（若安装 pytest）。"""
+    assert asyncio.run(_amain()) == 0
+
+
+if __name__ == "__main__":
+    import sys
+    # 与 cli.main() 一致：Windows GBK 控制台无法编码 ✓/🛠/✗ 等字符
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+    sys.exit(asyncio.run(_amain()))

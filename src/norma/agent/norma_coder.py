@@ -464,6 +464,7 @@ class NormaCoder(BaseAgent):
                 message_list=await self.memory.pull_messages()
                     if hasattr(self, 'memory') else [],
                 response=f"发生了错误: {str(e)}",
+                error=str(e),
                 tool_call_sequence=None,
                 tool_call_nums=0,
             )

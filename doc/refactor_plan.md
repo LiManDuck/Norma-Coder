@@ -14,8 +14,8 @@
 - [x] P5 接入与打磨（MCP/skill/command 在 TUI 中可用；流式渲染；模式切换；冒烟通过）
 - [~] P6 对齐增强（按需：~~工具并发分区~~、~~compact_boundary~~、~~系统提示结构化~~、~~分层 compaction~~ 已完成；parent_uuid 链可选未做）
 
-> **当前状态（功能完整）**：P0–P5 全部完成，P6 高价值项（并发分区 / compact_boundary / 系统提示结构化 / 分层 compaction）均已完成并有 headless 回归测试。MCP/Skill/TUI/compact 四大特性经端到端回归验证。P7 进一步硬化前端、移除死代码、修复 REPL 权限挂起与 3 个核心工具致命缺陷（BashTool Windows 崩溃 + 120s 超时、EditTool 先读后编门禁失效）、BashTool 名称大小写对齐 DANGEROUS_TOOLS、`/compact` 误报成功，并实现 PreToolUse 阻断式 hook（exit 2 + JSON stdin + stderr 回喂）。仅剩 parent_uuid 链（低价值可选）与真实 LLM 端到端冒烟（需可达 API，本环境不可达）。回归套件 13/13：`test_system_prompt` / `test_compact_resume` / `test_mcp_stdio` / `test_skill` / `test_tui_e2e` / `test_tui_render` / `test_repl_permission` / `test_hook` / `test_reminder` / `test_agent_tool` / `test_tools` / `test_permission` / `test_commands`，均 headless 可独立运行。
-> **已知遗留**：`src/norma/agent/{functioncall_agent,repo_ase_agent,step_agent}.py` 为被 NormaCoder 取代的旧 repo-ASE agent 血统，引用已删除模块（`norma.core.types`/`norma.agent.core`/`norma.agent.agent`）且 `repo_ase_agent.py` 有语法错误，无任何 live 代码引用——可选清理。
+> **当前状态（功能完整）**：P0–P5 全部完成，P6 高价值项（并发分区 / compact_boundary / 系统提示结构化 / 分层 compaction）均已完成并有 headless 回归测试。MCP/Skill/TUI/compact 四大特性经端到端回归验证。P7 进一步硬化前端、移除死代码、修复 REPL 权限挂起与 3 个核心工具致命缺陷（BashTool Windows 崩溃 + 120s 超时、EditTool 先读后编门禁失效）、BashTool 名称大小写对齐 DANGEROUS_TOOLS、`/compact` 误报成功，并实现 PreToolUse 阻断式 hook（exit 2 + JSON stdin + stderr 回喂），以及**前端异常可见性**（`AgentResponse.error` 字段 + TUI/REPL 红字 ✗ 提示 + AgentRunner 不再静默吞掉逃逸异常）。仅剩 parent_uuid 链（低价值可选）与真实 LLM 端到端冒烟（需可达 API，本环境不可达）。回归套件 13/13：`test_system_prompt` / `test_compact_resume` / `test_mcp_stdio` / `test_skill` / `test_tui_e2e` / `test_tui_render`（10 项） / `test_repl_permission` / `test_hook` / `test_reminder` / `test_agent_tool` / `test_tools` / `test_permission` / `test_commands`，均 headless 可独立运行。
+> **已知遗留**：3 个旧 repo-ASE agent 模块（`functioncall_agent`/`repo_ase_agent`/`step_agent.py`）已在 P7 移除（可从 git 历史恢复）。`TodoWriteTool` 为导出但未注册的死工具（Task 系统为活跃实现），保留为 SDK 可选工具未清理。无其他存活遗留。
 
 ## P0 现状盘点与参考研究
 - 通读 src/norma 全量代码，输出架构盘点（见 architecture.md §2）。
@@ -78,6 +78,7 @@
 - [x] 修复 `/compact` 误报成功：`_do_compact` 改返回 `bool`（True 已压缩 / False 失败 memory 不变），`cmd_compact` 依据返回值如实报告；主循环两处死代码 `if compact_event: yield compact_event`（恒 None 且无事件类型）改为副作用驱动。新增 `test_commands.py`（3 项）覆盖 9 个内置命令不崩溃 + /compact 诚实上报。
 - [ ] Session parent_uuid 链（分支/fork，可选，价值较低）。
 - [x] JSON stdin + exit2 阻断式 Hook：`HookManager.run_pre_tool_hooks` 实现 PreToolUse 阻断语义--hook 经 stdin 收到 JSON 上下文，exit 2 阻断工具并把 stderr 回喂 LLM，`_apply_hooks` 串联在 `_apply_permission` 之后。与静态权限分工（静态模式门禁 vs 动态可脚本化门禁）。回归 `test_hook.py` 7 项（含端到端主循环：LLM 请求 Write .env -> hook 阻断 -> 文件未创建 -> stderr 回喂）。
+- [x] 前端异常可见性（用户首要优先级「打通前端」的关键缺口）：此前 LLM 不可达/解析失败等异常经 `NormaCoder.run` 兜底为 `AgentResponse(response="发生了错误: ...")`，但 TUI 的 `AGENT_RESPONSE` 处理只画分隔符、不渲染 `response`，导致**最常见的真实失败对用户完全静默**（回合凭空结束、无任何提示）。修复：① `AgentResponse` 新增 `error: Optional[str]` 字段，`NormaCoder` 异常分支置 `error=str(e)`；② TUI `AGENT_RESPONSE` 处理在 `payload.error` 非空时以红字 ✗ 显式提示（且在流式部分输出后仍提示，不丢弃）；③ `render.py` REPL 路径错误用 ✗ 红字替代误导性的 ✅；④ `AgentRunner._run` 不再 `except: return None` 静默吞掉逃逸异常，改为上抛，经 `_on_agent_done` -> `TurnFinishedMessage(ok=False)` 写出错误。回归 `test_tui_render.py` 新增 3 项（异常渲染 / 流式后异常 / 逃逸异常上浮），并经真实 `NormaCLI` + 抛错 LLM 桩验证 `AgentResponse.error` 经总线送达。
 
 ## 提交节奏
 - 每完成一个阶段（或阶段内可独立运行的切片）-> commit + push。

@@ -468,6 +468,14 @@ class NormaApp(App):
             ):
                 if self._stream_active:
                     self._commit_stream()
+                # 错误收尾：显式提示，避免 LLM 不可达等异常对用户静默
+                if payload.error:
+                    self._write_history(
+                        Text.assemble(
+                            Text("✗ 任务异常: ", style="bold red"),
+                            Text(payload.error, style="red"),
+                        )
+                    )
                 # 回合结束分隔
                 self._write_history(Text("─" * 60, style="dim"))
 

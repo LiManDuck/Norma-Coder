@@ -369,6 +369,128 @@ async def test_permission_modal_roundtrip() -> None:
 # 入口
 # =====================================================================
 
+async def test_error_response_rendered() -> None:
+    """异常收尾（如 LLM 不可达）：无任何前置输出时，错误文本必须显式渲染。
+
+    回归点：``AgentResponse.error`` 非空时，TUI 不再静默只画分隔符，
+    而是把错误以 ✗ 红字呈现给用户。
+    """
+    from norma.core.agent_types import AgentResponse
+    from norma.messagebus.messagebus import Message, MessageType
+
+    app, bus, _uim = await _build_app()
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            recorded = _install_recorder(app)
+
+            await bus.publish(Message(
+                msg_type=MessageType.AGENT_RESPONSE,
+                payload=AgentResponse(
+                    agent_name="t", input_message=[], tools=None,
+                    prompt_usage=None, event_list=[], message_list=[],
+                    response="发生了错误: connection refused",
+                    error="connection refused",
+                ),
+            ))
+            await _drain(pilot, bus)
+
+            joined = "\n".join(recorded)
+            assert "✗" in joined, f"错误标记 ✗ 缺失: {joined!r}"
+            assert "connection refused" in joined, f"错误文本被静默吞掉: {joined!r}"
+            assert "任务异常" in joined, f"错误标题缺失: {joined!r}"
+    finally:
+        await bus.stop()
+
+
+async def test_error_shown_after_partial_stream() -> None:
+    """流式已吐部分文本后异常：部分文本与错误提示都应可见。
+
+    回归点：``error`` 在已有流式输出时仍要显示（不能因「本回合已展示过文本」
+    而丢弃错误）。
+    """
+    from norma.core.agent_types import AgentTextDeltaEvent, AgentResponse
+    from norma.messagebus.messagebus import Message, MessageType
+
+    app, bus, _uim = await _build_app()
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            recorded = _install_recorder(app)
+
+            await bus.publish(Message(
+                msg_type=MessageType.AGENT_TEXT_DELTA,
+                payload=AgentTextDeltaEvent(agent_name="t", delta="部分回答"),
+            ))
+            await _drain(pilot, bus)
+
+            await bus.publish(Message(
+                msg_type=MessageType.AGENT_RESPONSE,
+                payload=AgentResponse(
+                    agent_name="t", input_message=[], tools=None,
+                    prompt_usage=None, event_list=[], message_list=[],
+                    response="发生了错误: downstream timeout",
+                    error="downstream timeout",
+                ),
+            ))
+            await _drain(pilot, bus)
+
+            joined = "\n".join(recorded)
+            assert "部分回答" in joined, f"流式部分文本丢失: {joined!r}"
+            assert "✗" in joined and "downstream timeout" in joined, (
+                f"流式后异常未显式提示: {joined!r}"
+            )
+    finally:
+        await bus.stop()
+
+
+async def test_unexpected_error_surfaced() -> None:
+    """agent.run() 抛出逃逸异常 -> TUI 经 done_callback 显式提示，不静默结束。
+
+    回归点：``AgentRunner`` 不再吞掉逃逸异常返回 None，而是上抛，使
+    ``_on_agent_done`` 走 ``TurnFinishedMessage(ok=False)`` 路径写出错误。
+    """
+    from norma.cli.ui.tui.app import NormaApp
+    from norma.messagebus.messagebus import MessageBus, UserInputManager
+
+    bus = MessageBus()
+    await bus.start()
+    uim = UserInputManager(bus)
+
+    class _RaisingAgent:
+        permission_checker = None
+        llm = types.SimpleNamespace(model="stub")
+        session_manager = None
+
+        async def run(self, query):  # noqa: ANN001 - 异步生成器桩
+            raise RuntimeError("内部意外错误: bug")
+            yield  # noqa: unreachable - 标记为 async generator
+
+    app = NormaApp(
+        agent=_RaisingAgent(), cwd=".", message_bus=bus, user_input_manager=uim
+    )
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            recorded = _install_recorder(app)
+
+            app.query_one("#input").value = "go"
+            await pilot.press("enter")
+
+            for _ in range(40):
+                await pilot.pause(delay=0.1)
+                if not app._is_running():
+                    break
+
+            assert not app._is_running(), "逃逸异常后回合未结束"
+            joined = "\n".join(recorded)
+            assert ("异常" in joined) or ("意外错误" in joined), (
+                f"逃逸异常被静默吞掉: {joined!r}"
+            )
+    finally:
+        await bus.stop()
+
+
 async def _amain() -> int:
     tests = [
         ("think_block_render", test_think_block_render),
@@ -378,6 +500,9 @@ async def _amain() -> int:
         ("command_paths", test_command_paths),
         ("f2_cycles_permission_mode", test_f2_cycles_permission_mode),
         ("permission_modal_roundtrip", test_permission_modal_roundtrip),
+        ("error_response_rendered", test_error_response_rendered),
+        ("error_shown_after_partial_stream", test_error_shown_after_partial_stream),
+        ("unexpected_error_surfaced", test_unexpected_error_surfaced),
     ]
     failures = 0
     for name, fn in tests:

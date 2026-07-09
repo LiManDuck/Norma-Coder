@@ -48,7 +48,10 @@ class AgentRunner:
             logger.info("agent run cancelled")
             raise
         except Exception as exc:
+            # 逃逸出 agent 内部 try/except 的意外异常（如 error_response 构造失败）
+            # 必须上抛，让前端经 done_callback 显式提示，而非静默吞掉。
             logger.error(f"agent run error: {exc}", exc_info=True)
+            raise
         return final
 
     async def wait(self) -> Optional[AgentResponse]:

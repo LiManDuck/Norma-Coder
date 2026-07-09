@@ -77,11 +77,13 @@ class AgentResponse:
     tools: List[Tool] | None
     prompt_usage: None 
 
-    event_list: Sequence[AgentEvent] 
+    event_list: Sequence[AgentEvent]
     message_list: List[LLMMessage]
     response: str | None = None
-   
-    tool_call_sequence: Sequence[ToolRequest] | None = None 
+    # 非空表示本次执行以异常收尾；前端据此显式提示错误（区别于正常回复）。
+    error: Optional[str] = None
+
+    tool_call_sequence: Sequence[ToolRequest] | None = None
     tool_call_nums  : int | None = None
 
 

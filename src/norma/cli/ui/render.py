@@ -113,6 +113,12 @@ class AgentEventRenderer:
         # AgentResponse contains response field directly
         #answer = getattr(event, 'response', str(event))
         answer = event.response
+        if getattr(event, 'error', None):
+            content = (
+                f"<style fg='ansired'><b>✗ 任务异常:</b>\n"
+                f"{html.escape(str(event.error))}</style>"
+            )
+            return HTML(content)
         content = (
             f"<b fg='ansimagenta'>✅:</b>\n"
             f"{html.escape(str(answer))}"

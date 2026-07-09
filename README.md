@@ -94,17 +94,27 @@ asyncio.run(main())
 
 ## 测试
 
-回归套件（headless，无需真实 API）：
+回归套件（headless，无需真实 API）。一键运行全部 17 个模块：
+
+```bash
+PYTHONPATH=src python -m norma.run_tests    # ✓ 全绿！17/17 模块通过
+```
+
+或逐个调试单模块：
 
 ```bash
 python -m norma.prompt.test_system_prompt      # 系统提示 + CLAUDE.md
 python -m norma.agent.test_compact_resume      # compact_boundary + 微压缩
+python -m norma.agent.test_runner              # AgentRunner 总线桥接契约
+python -m norma.messagebus.test_messagebus     # 总线分发 + 事件映射 + 确认流
+python -m norma.core.test_openai_llm           # LLM parse/build/stream
 python -m norma.mcp.test_mcp_stdio             # MCP stdio 端到端（mock 服务器）
 python -m norma.skill.test_skill               # Skill 系统
 python -m norma.hook.test_hook                 # Hook 系统
 python -m norma.reminder.test_reminder         # Reminder 系统
 python -m norma.tool.agent_tool.test_agent_tool  # 子 agent 调度
 python -m norma.cli.ui.tui.test_tui_e2e        # TUI 端到端（mock LLM）
+python -m norma.cli.ui.tui.test_tui_render     # TUI 渲染（13 项）
 ```
 
 真实 LLM 冒烟（在配置了真实 api_key 的环境运行）：

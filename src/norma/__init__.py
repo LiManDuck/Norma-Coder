@@ -19,6 +19,7 @@ SDK 用法示例::
 """
 
 from norma.agent.norma_coder import NormaCoder
+from norma.agent.runner import AgentRunner
 from norma.core.openai_llm import OpenAILLM
 from norma.core.llm_types import (
     BaseLLM,
@@ -55,6 +56,7 @@ from norma.messagebus.messagebus import MessageBus, UserInputManager
 __all__ = [
     # Agent
     "NormaCoder",
+    "AgentRunner",
     "BaseAgent",
     "AgentEvent",
     "AgentResponse",

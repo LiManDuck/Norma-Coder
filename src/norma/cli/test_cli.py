@@ -28,6 +28,17 @@ def _set_home(tmp: str) -> None:
     os.environ["NORMA_CONFIG_HOME"] = tmp
 
 
+def _wrap_sync(fn):
+    """把同步用例包成协程，供 _amain 统一 await。"""
+    import asyncio
+
+    async def runner():
+        return await asyncio.to_thread(fn)
+
+    runner.__name__ = fn.__name__
+    return runner
+
+
 async def test_model_override() -> None:
     from norma.cli.cli import NormaCLI
 
@@ -112,6 +123,34 @@ async def test_model_override_wins_over_config_file() -> None:
             cli.session_manager.close()
 
 
+def test_python_dash_m_norma_entry() -> None:
+    """`python -m norma` 顶层入口可用（src/norma/__main__.py 委托 cli.main）。
+
+    此前缺 `__main__.py`，`python -m norma` 报 "cannot be directly executed"，
+    与标准 Python CLI 习惯相悖。锁定该入口 + prog 显示为 `norma`。
+    """
+    import subprocess
+
+    src_root = Path(__file__).resolve().parents[2]  # .../src
+    repo_root = src_root.parent
+    env = dict(os.environ, PYTHONPATH=str(src_root))
+    proc = subprocess.run(
+        [sys.executable, "-m", "norma", "--help"],
+        cwd=repo_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "norma" in proc.stdout, proc.stdout
+    assert "--model" in proc.stdout, proc.stdout
+    # prog 应为 norma（而非 __main__.py）
+    assert "usage: norma" in proc.stdout, proc.stdout
+
+
 async def _amain() -> int:
     tests = [
         ("model_override", test_model_override),
@@ -119,6 +158,8 @@ async def _amain() -> int:
         ("config_path_missing_does_not_crash", test_config_path_missing_does_not_crash),
         ("default_config_respects_config_home", test_default_config_respects_config_home),
         ("model_override_wins_over_config_file", test_model_override_wins_over_config_file),
+        # 同步 subprocess 用例，包一层协程以统一 await 调度
+        ("python_dash_m_norma_entry", _wrap_sync(test_python_dash_m_norma_entry)),
     ]
     failures = 0
     for name, fn in tests:

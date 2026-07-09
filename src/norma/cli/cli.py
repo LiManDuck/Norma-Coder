@@ -307,6 +307,7 @@ def main():
             pass
 
     parser = argparse.ArgumentParser(
+        prog='norma',
         description='Norma AI Agent - 智能编码助手',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""

@@ -464,7 +464,7 @@ class BashTool(Tool):
 
     @property
     def name(self) -> str:
-        return "bash"
+        return "Bash"
 
     @property
     def description(self) -> str:

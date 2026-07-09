@@ -11,7 +11,7 @@ NormaCoder - 主 Agent
 from typing import (
      Optional,
      AsyncGenerator,
-     List, Union, Callable
+     List, Union, Callable, Iterable
 )
 import json
 import uuid
@@ -134,6 +134,9 @@ class NormaCoder(BaseAgent):
         # compaction
         compact_threshold: float = 0.75,
         micro_compact_retain: int = 6,
+        # 工具白名单：非空时仅保留名称命中（大小写不敏感）的默认工具，
+        # 用于 skill 子 agent 的 allowed_tools 沙箱化；None/空表示不限制。
+        tool_whitelist: Optional[Iterable[str]] = None,
     ):
         self._name = name
         self.llm = llm
@@ -189,6 +192,13 @@ class NormaCoder(BaseAgent):
                 )
             )
 
+        # 工具白名单收窄（skill allowed_tools 沙箱）。空/None 不限制；
+        # 大小写不敏感匹配工具名（frontmatter 可能写 Ls/LS/ls）。
+        if tool_whitelist:
+            wl = {str(t).strip().lower() for t in tool_whitelist if str(t).strip()}
+            if wl:
+                default_tools = [t for t in default_tools if t.name.lower() in wl]
+
         all_tools = default_tools + (tools or [])
         self.tool_manager = NormaArtifact(tools=all_tools)
 
@@ -205,8 +215,16 @@ class NormaCoder(BaseAgent):
     # =====================================================
     # 子 agent 工厂
     # =====================================================
-    def _default_subagent_factory(self, name: Optional[str] = None) -> "NormaCoder":
-        """默认的子 agent 工厂：复用 LLM 与 cwd，禁用嵌套 subagent，避免无限递归"""
+    def _default_subagent_factory(
+        self,
+        name: Optional[str] = None,
+        allowed_tools: Optional[Iterable[str]] = None,
+    ) -> "NormaCoder":
+        """默认的子 agent 工厂：复用 LLM 与 cwd，禁用嵌套 subagent，避免无限递归。
+
+        ``allowed_tools`` 非空时收窄子 agent 的工具集（skill 沙箱），透传给
+        ``NormaCoder(tool_whitelist=...)``。
+        """
         return NormaCoder(
             llm=self.llm,
             cwd=self.cwd,
@@ -221,6 +239,7 @@ class NormaCoder(BaseAgent):
             reminder_registry=self.reminder_registry,
             skill_registry=self.skill_registry,
             enable_skill=False,
+            tool_whitelist=allowed_tools,
         )
 
     # =====================================================

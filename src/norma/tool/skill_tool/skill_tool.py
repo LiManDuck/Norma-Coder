@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from norma.core.agent_types import AgentResponse, BaseAgent
 from norma.core.tool_types import (
@@ -124,7 +124,7 @@ class SkillTool(Tool):
         prompt = skill.render_prompt(args=skill_args if isinstance(skill_args, str) else None)
 
         try:
-            agent = self._make_agent(skill_name)
+            agent = self._make_agent(skill_name, allowed_tools=skill.allowed_tools or None)
             response = await self._consume(agent, prompt)
         except Exception as exc:
             logger.exception(f"skill {skill_name} failed")
@@ -144,7 +144,22 @@ class SkillTool(Tool):
         )
 
     # ------------------------------------------------
-    def _make_agent(self, skill_name: str) -> BaseAgent:
+    def _make_agent(
+        self,
+        skill_name: str,
+        allowed_tools: Optional[List[str]] = None,
+    ) -> BaseAgent:
+        """构造子 agent，透传 ``allowed_tools`` 给工厂以收窄工具集（skill 沙箱）。
+
+        自定义工厂可能不接受 ``allowed_tools``/``name`` 关键字，逐级降级：
+        (name+allowed_tools) -> (name) -> ()。
+        """
+        try:
+            return self.agent_factory(
+                name=f"skill[{skill_name}]", allowed_tools=allowed_tools
+            )
+        except TypeError:
+            pass
         try:
             return self.agent_factory(name=f"skill[{skill_name}]")
         except TypeError:

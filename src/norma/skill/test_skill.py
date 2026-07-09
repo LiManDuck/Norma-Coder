@@ -152,6 +152,85 @@ async def test_skill_tool_execute(tmpdir: str) -> None:
     print("[PASS] SkillTool.execute (happy + not-found + missing-name)")
 
 
+def test_tool_whitelist_restricts_default_tools(tmpdir: str) -> None:
+    """NormaCoder(tool_whitelist=...) 仅保留命中的默认工具（大小写不敏感）。
+
+    验证 skill ``allowed_tools`` 沙箱的底层机制：白名单非空时收窄默认工具集。
+    """
+    import os
+    from norma.agent.norma_coder import NormaCoder
+    from norma.session.session import SessionManager
+
+    os.environ["NORMA_CONFIG_HOME"] = tmpdir
+
+    class _LLM:
+        default_stream_mode = False
+        max_context_tokens = 1000
+
+        def estimate_tokens(self, messages) -> int:
+            return 1
+
+    sm = SessionManager(cwd=tmpdir)
+
+    # 白名单大小写混合，应能匹配 Read/Grep
+    agent = NormaCoder(
+        llm=_LLM(),  # type: ignore[arg-type]
+        cwd=tmpdir,
+        name="WL",
+        enable_subagent=False,
+        enable_skill=False,
+        session_manager=sm,
+        tool_whitelist=["read", "GREP"],
+    )
+    names = set(agent.tool_manager.list_tools())
+    assert names == {"Read", "Grep"}, f"白名单应收窄为 Read/Grep，实际 {names}"
+
+    # 无白名单 -> 全部默认工具
+    agent_full = NormaCoder(
+        llm=_LLM(),  # type: ignore[arg-type]
+        cwd=tmpdir,
+        name="WLFull",
+        enable_subagent=False,
+        enable_skill=False,
+        session_manager=sm,
+    )
+    full_names = set(agent_full.tool_manager.list_tools())
+    assert "Bash" in full_names and "Write" in full_names, "无白名单应含全部默认工具"
+    print("[PASS] tool_whitelist restricts default tools (case-insensitive)")
+
+
+async def test_skill_tool_passes_allowed_tools(tmpdir: str) -> None:
+    """SkillTool 把 skill 的 allowed_tools 透传给子 agent 工厂。"""
+    d = Path(tmpdir) / "skills_wl"
+    d.mkdir(exist_ok=True)
+    (d / "sandbox.md").write_text(
+        "---\nname: sandbox\ndescription: sandboxed\nallowed_tools: [Read, Grep]\n---\nbody\n",
+        encoding="utf-8",
+    )
+    reg = SkillRegistry.from_dirs([d])
+
+    captured: dict = {}
+
+    def factory(name=None, allowed_tools=None):
+        captured["name"] = name
+        captured["allowed_tools"] = allowed_tools
+        return _FakeAgent(name=name)
+
+    tool = SkillTool(registry=reg, agent_factory=factory)
+    req = ToolRequest(
+        tool_call_id="s1",
+        tool_call_name="Skill",
+        tool_call_arguments={"name": "sandbox"},
+    )
+    res = await tool.execute(req)
+    assert res.is_error is False, f"不应报错: {res.content}"
+    assert captured.get("allowed_tools") == ["Read", "Grep"], (
+        f"应透传 allowed_tools，实际 {captured.get('allowed_tools')!r}")
+    assert "sandbox" in (captured.get("name") or ""), (
+        f"应透传 name，实际 {captured.get('name')!r}")
+    print("[PASS] SkillTool passes allowed_tools to subagent factory")
+
+
 async def _amain() -> int:
     failures = 0
     # 同步用例
@@ -170,7 +249,7 @@ async def _amain() -> int:
             failures += 1
     # 需要 tmpdir 的用例
     with tempfile.TemporaryDirectory() as tmpdir:
-        for fn in (test_load_and_registry,):
+        for fn in (test_load_and_registry, test_tool_whitelist_restricts_default_tools):
             try:
                 fn(tmpdir)
             except AssertionError as exc:
@@ -181,16 +260,17 @@ async def _amain() -> int:
                 print(f"[ERROR] {fn.__name__}: {exc}")
                 traceback.print_exc()
                 failures += 1
-        try:
-            await test_skill_tool_execute(tmpdir)
-        except AssertionError as exc:
-            print(f"[FAIL] test_skill_tool_execute: {exc}")
-            failures += 1
-        except Exception as exc:  # noqa: BLE001
-            import traceback
-            print(f"[ERROR] test_skill_tool_execute: {exc}")
-            traceback.print_exc()
-            failures += 1
+        for fn in (test_skill_tool_execute, test_skill_tool_passes_allowed_tools):
+            try:
+                await fn(tmpdir)
+            except AssertionError as exc:
+                print(f"[FAIL] {fn.__name__}: {exc}")
+                failures += 1
+            except Exception as exc:  # noqa: BLE001
+                import traceback
+                print(f"[ERROR] {fn.__name__}: {exc}")
+                traceback.print_exc()
+                failures += 1
     if failures:
         print(f"\n{failures} test(s) failed")
         return 1

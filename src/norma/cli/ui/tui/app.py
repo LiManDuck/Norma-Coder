@@ -33,7 +33,7 @@ from rich.console import RenderableType
 from rich.panel import Panel
 from rich.syntax import Syntax
 from rich.text import Text
-from textual import work
+from textual import events, work
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Vertical
@@ -169,6 +169,30 @@ class PermissionModal(ModalScreen[bool]):
 
 
 # =====================================================================
+# 多行粘贴友好的输入框
+# =====================================================================
+
+class _MultiLineInput(Input):
+    """保留多行粘贴完整文本的输入框。
+
+    textual ``Input`` 的 ``_on_paste`` 仅取 ``splitlines()[0]``，多行粘贴（代码块、
+    报错栈）会只剩首行。本子类改为插入完整文本--``value`` 持有全部行（含换行），
+    Enter 提交时整段送达 agent。单行编辑视觉不变（Input 仍只渲染首行），提交后
+    历史区会回显完整多行文本。
+    """
+
+    def _on_paste(self, event: events.Paste) -> None:
+        if event.text:
+            text = event.text
+            selection = self.selection
+            if selection.is_empty:
+                self.insert_text_at_cursor(text)
+            else:
+                self.replace(text, *selection)
+        event.stop()
+
+
+# =====================================================================
 # 总线事件 -> Textual 消息
 # =====================================================================
 
@@ -269,7 +293,7 @@ class NormaApp(App):
         yield RichLog(id="history", highlight=False, markup=True, auto_scroll=True)
         yield Static("", id="stream", markup=True)
         yield Static("", id="status")
-        yield Input(id="input", placeholder="输入问题，或 /help 查看命令")
+        yield _MultiLineInput(id="input", placeholder="输入问题，或 /help 查看命令")
         yield Footer()
 
     def on_mount(self) -> None:

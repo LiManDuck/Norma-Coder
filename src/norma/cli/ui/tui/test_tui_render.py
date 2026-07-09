@@ -383,6 +383,29 @@ async def test_permission_modal_roundtrip() -> None:
 # 入口
 # =====================================================================
 
+async def test_multiline_paste_preserved() -> None:
+    """多行粘贴：完整文本保留在 value（父类 Input._on_paste 仅取首行）。
+
+    回归点：粘贴含换行的代码块/报错栈时，``_MultiLineInput`` 保留全部行，
+    Enter 提交时整段送达 agent，而非只剩首行。
+    """
+    from textual import events
+
+    app, bus, _uim = await _build_app()
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            inp = app.query_one("#input")
+            inp.post_message(events.Paste(text="line1\nline2\nline3"))
+            await pilot.pause(delay=0.1)
+            assert "\n" in inp.value, f"多行粘贴被截断为首行: {inp.value!r}"
+            assert "line2" in inp.value and "line3" in inp.value, (
+                f"后续行丢失: {inp.value!r}"
+            )
+    finally:
+        await bus.stop()
+
+
 async def test_assistant_markdown_render() -> None:
     """助手回复落盘历史区时渲染为 Markdown：代码块内容仍可达。
 
@@ -555,6 +578,7 @@ async def _amain() -> int:
         ("command_paths", test_command_paths),
         ("f2_cycles_permission_mode", test_f2_cycles_permission_mode),
         ("permission_modal_roundtrip", test_permission_modal_roundtrip),
+        ("multiline_paste_preserved", test_multiline_paste_preserved),
         ("assistant_markdown_render", test_assistant_markdown_render),
         ("error_response_rendered", test_error_response_rendered),
         ("error_shown_after_partial_stream", test_error_shown_after_partial_stream),

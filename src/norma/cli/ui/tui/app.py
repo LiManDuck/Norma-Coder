@@ -91,6 +91,21 @@ def _format_args(args) -> str:
         return str(args)
 
 
+def _render_assistant(text: str) -> RenderableType:
+    """把助手回复渲染为 Markdown（代码块语法高亮 / 列表 / 加粗）。
+
+    流式增量阶段仍以纯文本追加到流式区（增量 Markdown 重排会抖动），
+    落盘历史区时统一渲染为 Markdown，使含代码块的回复可读。
+    """
+    from rich.console import Group
+    from rich.markdown import Markdown
+
+    return Group(
+        Text("🤖 ", style="bold cyan"),
+        Markdown(text),
+    )
+
+
 # =====================================================================
 # 权限确认弹窗
 # =====================================================================
@@ -356,12 +371,7 @@ class NormaApp(App):
                 )
             )
         if self._stream_text:
-            self._write_history(
-                Text.assemble(
-                    Text("🤖 ", style="bold cyan"),
-                    Text(self._stream_text),
-                )
-            )
+            self._write_history(_render_assistant(self._stream_text))
         self._stream_text = ""
         self._stream_think = ""
         self._stream_active = False
@@ -455,12 +465,7 @@ class NormaApp(App):
                             )
                         )
                     if content:
-                        self._write_history(
-                            Text.assemble(
-                                Text("🤖 ", style="bold cyan"),
-                                Text(content),
-                            )
-                        )
+                        self._write_history(_render_assistant(content))
                 self._commit_stream()
 
             elif mtype == MessageType.AGENT_RESPONSE and isinstance(

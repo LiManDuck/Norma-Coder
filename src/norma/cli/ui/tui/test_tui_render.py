@@ -67,11 +67,25 @@ def _install_recorder(app) -> list[str]:
     orig = app._write_history
 
     def _rec(renderable) -> None:
-        recorded.append(getattr(renderable, "plain", str(renderable)))
+        # Text 直接取 .plain；Group/Markdown 等经 Console 捕获渲染文本
+        plain = getattr(renderable, "plain", None)
+        if plain is not None:
+            recorded.append(plain)
+        else:
+            recorded.append(_capture_text(renderable))
         orig(renderable)
 
     app._write_history = _rec
     return recorded
+
+
+def _capture_text(renderable) -> str:
+    """把任意 rich renderable 渲染成纯文本（用于断言 Group/Markdown 内容）。"""
+    from rich.console import Console
+
+    c = Console(record=True, width=100)
+    c.print(renderable)
+    return c.export_text()
 
 
 async def _build_app():
@@ -369,6 +383,47 @@ async def test_permission_modal_roundtrip() -> None:
 # 入口
 # =====================================================================
 
+async def test_assistant_markdown_render() -> None:
+    """助手回复落盘历史区时渲染为 Markdown：代码块内容仍可达。
+
+    回归点：流式增量以纯文本入流式区，``_commit_stream`` 落盘时统一渲染为
+    ``Markdown``（代码块语法高亮 / 加粗 / 列表），含代码的回复可读而非裸 ```` ``` ````。
+    """
+    from norma.core.agent_types import AgentTextDeltaEvent, AgentLLMResponseEvent
+    from norma.core.llm_types import LLMResponse, AssistantMessage
+    from norma.messagebus.messagebus import Message, MessageType
+
+    app, bus, _uim = await _build_app()
+    try:
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            recorded = _install_recorder(app)
+
+            code = "```python\nprint('hi')\n```"
+            await bus.publish(Message(
+                msg_type=MessageType.AGENT_TEXT_DELTA,
+                payload=AgentTextDeltaEvent(agent_name="t", delta=code),
+            ))
+            await _drain(pilot, bus)
+
+            await bus.publish(Message(
+                msg_type=MessageType.AGENT_LLM_RESPONSE,
+                payload=AgentLLMResponseEvent(
+                    agent_name="t",
+                    response=LLMResponse(
+                        response_message=AssistantMessage(content="", tool_calls=None),
+                        finish_reason="stop",
+                    ),
+                ),
+            ))
+            await _drain(pilot, bus)
+
+            joined = "\n".join(recorded)
+            assert "print('hi')" in joined, f"代码块文本落盘后丢失: {joined!r}"
+    finally:
+        await bus.stop()
+
+
 async def test_error_response_rendered() -> None:
     """异常收尾（如 LLM 不可达）：无任何前置输出时，错误文本必须显式渲染。
 
@@ -500,6 +555,7 @@ async def _amain() -> int:
         ("command_paths", test_command_paths),
         ("f2_cycles_permission_mode", test_f2_cycles_permission_mode),
         ("permission_modal_roundtrip", test_permission_modal_roundtrip),
+        ("assistant_markdown_render", test_assistant_markdown_render),
         ("error_response_rendered", test_error_response_rendered),
         ("error_shown_after_partial_stream", test_error_shown_after_partial_stream),
         ("unexpected_error_surfaced", test_unexpected_error_surfaced),

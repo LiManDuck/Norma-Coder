@@ -97,7 +97,7 @@ asyncio.run(main())
 回归套件（headless，无需真实 API）。一键运行全部 17 个模块：
 
 ```bash
-PYTHONPATH=src python -m norma.run_tests    # ✓ 全绿！17/17 模块通过
+PYTHONPATH=src python -m norma.run_tests    # ✓ 全绿！18/18 模块通过
 ```
 
 或逐个调试单模块：

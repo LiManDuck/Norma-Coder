@@ -59,16 +59,21 @@
 - [x] 流式渲染：assistant 文本/推理增量实时追加流式区，收尾落盘（headless 模拟事件验证）。
 - [x] 中断：`Ctrl+C` 在运行中调用 `AgentRunner.cancel()`，`TurnFinishedMessage` 收尾。
 - [x] 权限确认弹层 allow/deny 闭环（headless 验证）。
-- [x] 专项回归测试覆盖：TUI e2e（`test_tui_e2e.py`，mock OpenAI client）、MCP stdio（`test_mcp_stdio.py`，mock MCP 服务器子进程）、Skill（`test_skill.py`，mock 子 agent）、compact/resume（`test_compact_resume.py`）。均 headless 可独立运行。
+- [x] 专项回归测试覆盖（headless、可独立运行，9/9 全绿）：TUI e2e（`test_tui_e2e.py`，mock OpenAI client，流式+非流式两轮）、TUI 前端渲染与交互（`test_tui_render.py`，思考块/多工具调用/工具成功错误标记/流式中断/权限弹窗往返）、MCP stdio（`test_mcp_stdio.py`，mock MCP 服务器子进程）、Skill（`test_skill.py`，mock 子 agent）、compact/resume（`test_compact_resume.py`，边界+微压缩）、系统提示（`test_system_prompt.py`，CLAUDE.md 注入与排序）、Reminder（`test_reminder.py`）、Hook（`test_hook.py`，环境变量/match/总线订阅）、AgentTool（`test_agent_tool.py`，前台/后台/session 复用）。
 - [x] 端到端真实 LLM 冒烟脚本 `python -m norma.smoke_real_llm`：读取 `~/.norma/config.json`，用真实 api_key/base_url 走非流式 `chat()` + 流式 `stream_chat()` 各一次，验证连通与解析；未配置真实 key 或不可达时 SKIP（不阻塞），可由用户在自有环境一键验证。
 
 ## P6 对齐增强（按价值择优）
 - [x] 工具并发分区（只读并发，写串行）：`Tool.is_readonly` 元数据 + `NormaArtifact.execute_tools` 分区，结果按原序返回；Read/Ls/Glob/Grep/TaskGet/TaskList 标记只读。
 - [x] MCP 工具名前缀 `mcp__server__tool`（`MCPTool` 已实现，含 `is_readonly`/`is_destructive`）。
 - [x] compact_boundary：`_do_compact` 写入 `compact_boundary` 边界条目到 session jsonl；`restore_from_session` 遇到边界时丢弃边界前重放、仅保留 system+摘要+边界后轮次（回归测试 `test_compact_resume.py` 通过）。
-- [ ] Session parent_uuid 链（分支/fork，可选，价值较低）。
 - [x] 分层 compaction（微压缩清旧 tool_result）：新增 `_micro_compact`（无 LLM 调用），截断较早的 tool_result 内容、保留最近 N 条原文，不删消息、保留 tool_call_id 链接；`_should_compact` 触发与 `finish_reason=length` 路径均改为「先微压缩，仍超阈值再完整摘要」。回归测试 `test_compact_resume.py::test_micro_compact` 通过。
 - [x] 系统提示结构化：`SystemPromptService` 拼装「核心指令 md + 环境段（cwd/平台）+ 项目记忆 CLAUDE.md」；CLAUDE.md 收集用户级 `~/.norma/CLAUDE.md` + 项目级（自 cwd 向上遍历祖先至根），项目级排在用户级之后（更优先），超长截断。回归测试 `test_system_prompt.py` 通过。
+
+## P7 清理与前端硬化
+- [x] 移除 3 个遗留死 agent 模块（`functioncall_agent.py`/`repo_ase_agent.py`/`step_agent.py`）：闭环死集群，引用已删除模块且含语法错误，无存活代码引用（可从 git 历史恢复）；`walk_packages` 导入失败 3 -> 0。
+- [x] 前端硬化回归 `test_tui_render.py`：补 `test_tui_e2e.py` 未覆盖的前端渲染正确性与交互（思考块/多工具调用/工具成功错误标记/流式中断/权限弹窗往返），向真实 MessageBus 发布合成事件 + Textual pilot 抽干消息泵，复现总线->post_message->渲染全链路。
+- [ ] Session parent_uuid 链（分支/fork，可选，价值较低）。
+- [ ] JSON stdin + exit2 阻断式 Hook（可选；当前权限系统已覆盖工具执行门禁）。
 
 ## 提交节奏
 - 每完成一个阶段（或阶段内可独立运行的切片）-> commit + push。

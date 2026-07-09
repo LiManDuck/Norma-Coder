@@ -350,6 +350,13 @@ class NormaCoder(BaseAgent):
                         tool_requests
                     )
 
+                    # ---- PreToolUse hook 门禁（exit 2 阻断，stderr 回喂 LLM）----
+                    if self.hook_manager is not None and allowed_requests:
+                        allowed_requests, hook_denied = await self._apply_hooks(
+                            allowed_requests
+                        )
+                        denied_results.update(hook_denied)
+
                     tool_request_event = AgentToolRequestEvent(
                         agent_name=self.name,
                         tool_calls=tool_requests,
@@ -627,6 +634,42 @@ class NormaCoder(BaseAgent):
                         req, "user rejected the tool execution"
                     )
 
+        return allowed, denied
+
+    async def _apply_hooks(
+        self, tool_requests: List[ToolRequest]
+    ) -> tuple[List[ToolRequest], dict[str, ToolRequestResult]]:
+        """运行 PreToolUse hook 门禁（在静态权限检查之后）。
+
+        hook exit 2 -> 阻断该工具调用，stderr 作为原因回喂 LLM（与 Claude Code
+        阻断式 hook 语义一致）。无 hook_manager 时直接放行。
+        """
+        denied: dict[str, ToolRequestResult] = {}
+        if self.hook_manager is None:
+            return list(tool_requests), denied
+        allowed: List[ToolRequest] = []
+        for req in tool_requests:
+            tool_input = (
+                req.tool_call_arguments
+                if isinstance(req.tool_call_arguments, dict)
+                else {}
+            )
+            try:
+                block = await self.hook_manager.run_pre_tool_hooks(
+                    tool_name=req.tool_call_name,
+                    tool_input=tool_input,
+                    conversation_id=self.conversation_id,
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(f"pre-tool hook error for {req.tool_call_name}: {exc}")
+                allowed.append(req)
+                continue
+            if block.blocked:
+                denied[req.tool_call_id] = self._make_denied_result(
+                    req, f"blocked by hook: {block.reason}"
+                )
+            else:
+                allowed.append(req)
         return allowed, denied
 
     async def _ask_user(self, req: ToolRequest) -> bool:

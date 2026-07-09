@@ -37,6 +37,7 @@ HookManager 订阅消息总线 (MessageBus) 上对应的消息类型。当收到
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import shlex
@@ -148,6 +149,26 @@ class HookConfig:
         return cls(hooks=result)
 
 
+# ====================== 结果 ======================
+
+@dataclass
+class HookRunResult:
+    """单条 hook 命令的执行结果。returncode=None 表示未运行/超时/异常。"""
+
+    returncode: Optional[int]
+    stdout: str = ""
+    stderr: str = ""
+    timed_out: bool = False
+
+
+@dataclass
+class HookBlockResult:
+    """PreToolUse 阻断判定。blocked=True 时 reason 为回喂 LLM 的原因（hook stderr）。"""
+
+    blocked: bool
+    reason: str = ""
+
+
 # ====================== 管理器 ======================
 
 class HookManager:
@@ -167,11 +188,20 @@ class HookManager:
     # ---------- 注册 ----------
 
     def attach(self, message_bus: MessageBus) -> None:
-        """订阅 messagebus 上的对应事件"""
+        """订阅 messagebus 上的对应事件。
+
+        注意：``tool-execute-before`` **不**经总线订阅。它需要「阻断」语义
+        （hook exit 2 -> 阻断工具并把 stderr 回喂 LLM），由 agent 主循环在执行
+        工具前同步调用 :meth:`run_pre_tool_hooks` 完成；若再经总线异步触发会造成
+        同一条 hook 重复执行。其余事件（user-input / tool-execute-after /
+        agent-response）仅作通知，仍走总线。
+        """
         if self._subscribed:
             return
         self.message_bus = message_bus
         for event, msg_type in EVENT_TO_MESSAGE_TYPE.items():
+            if event == HookEvent.TOOL_EXECUTE_BEFORE:
+                continue
             message_bus.subscribe(msg_type, self._make_handler(event))
         self._subscribed = True
 
@@ -262,40 +292,113 @@ class HookManager:
 
     # ---------- 执行 ----------
 
-    async def _run(self, spec: HookSpec, env_extra: Dict[str, str]) -> None:
+    async def _run(
+        self,
+        spec: HookSpec,
+        env_extra: Dict[str, str],
+        stdin_json: Optional[str] = None,
+    ) -> HookRunResult:
+        """执行单条 hook 命令。
+
+        - ``stdin_json`` 非空时，将其作为命令的标准输入（用于 PreToolUse 注入
+          JSON 上下文：event/tool_name/tool_input/conversation_id）。
+        - 返回 :class:`HookRunResult`；后台 hook 无法同步等待，返回 returncode=None。
+        """
         env = os.environ.copy()
         env.update(env_extra)
         command = spec.command
+        stdin_bytes = stdin_json.encode("utf-8") if stdin_json else None
 
-        async def _exec():
+        async def _exec() -> HookRunResult:
             try:
                 proc = await asyncio.create_subprocess_shell(
                     command,
                     env=env,
+                    stdin=asyncio.subprocess.PIPE if stdin_bytes is not None else None,
                     stdout=asyncio.subprocess.PIPE,
                     stderr=asyncio.subprocess.PIPE,
                 )
                 try:
                     stdout, stderr = await asyncio.wait_for(
-                        proc.communicate(), timeout=spec.timeout
+                        proc.communicate(input=stdin_bytes), timeout=spec.timeout
                     )
                 except asyncio.TimeoutError:
                     proc.kill()
                     logger.warning(f"hook timeout: {shlex.quote(command)}")
-                    return
-                if proc.returncode != 0:
+                    return HookRunResult(returncode=None, timed_out=True)
+                rc = proc.returncode
+                out = (stdout or b"").decode("utf-8", errors="replace")
+                err = (stderr or b"").decode("utf-8", errors="replace")
+                if rc == 2:
+                    # exit 2 是 PreToolUse 的「阻断」控制信号，非失败，降级为 debug
+                    logger.debug(
+                        f"hook exit 2 (block signal): {shlex.quote(command)} | stderr={err[:200]!r}"
+                    )
+                elif rc != 0:
                     logger.warning(
-                        f"hook command failed (rc={proc.returncode}): "
-                        f"{shlex.quote(command)} | stderr={stderr[:200]!r}"
+                        f"hook command failed (rc={rc}): "
+                        f"{shlex.quote(command)} | stderr={err[:200]!r}"
                     )
                 else:
                     logger.debug(
-                        f"hook ok: {shlex.quote(command)} | stdout={stdout[:200]!r}"
+                        f"hook ok: {shlex.quote(command)} | stdout={out[:200]!r}"
                     )
+                return HookRunResult(returncode=rc, stdout=out, stderr=err)
             except Exception as exc:
                 logger.warning(f"hook execution error: {exc}")
+                return HookRunResult(returncode=None, stderr=str(exc))
 
         if spec.background:
+            # 后台 hook 无法阻塞调用方，结果丢弃
             asyncio.create_task(_exec())
-        else:
-            await _exec()
+            return HookRunResult(returncode=None)
+        return await _exec()
+
+    async def run_pre_tool_hooks(
+        self,
+        tool_name: str,
+        tool_input: Dict[str, Any],
+        conversation_id: str = "",
+    ) -> HookBlockResult:
+        """运行 ``tool-execute-before``（PreToolUse）hook 并做阻断判定。
+
+        语义对齐 Claude Code：hook 以 **exit code 2** 退出则阻断该工具调用，
+        其 stderr 作为原因回喂 LLM；其它退出码不阻断（失败仅记日志）。
+
+        - 仅 ``background=False`` 的 hook 参与阻断判定（后台 hook 无法同步等待），
+          后台 hook 仍被触发以产生副作用，但不影响判定。
+        - hook 经 stdin 收到 JSON：``{event, tool_name, tool_input, conversation_id}``。
+        - ``match`` 过滤命中才执行（如 ``{"tool_name": "Edit"}``）。
+        - 首个 exit 2 的 hook 即决定阻断，后续 hook 不再执行。
+        """
+        specs = self.config.get(HookEvent.TOOL_EXECUTE_BEFORE)
+        if not specs:
+            return HookBlockResult(blocked=False)
+
+        env_extra: Dict[str, str] = {
+            "NORMA_HOOK_EVENT": HookEvent.TOOL_EXECUTE_BEFORE.value,
+            "EVENT": HookEvent.TOOL_EXECUTE_BEFORE.value,
+            "TOOL_NAME": tool_name,
+        }
+        if conversation_id:
+            env_extra["CONVERSATION_ID"] = conversation_id
+
+        payload = {
+            "event": HookEvent.TOOL_EXECUTE_BEFORE.value,
+            "tool_name": tool_name,
+            "tool_input": tool_input,
+            "conversation_id": conversation_id,
+        }
+        stdin_json = json.dumps(payload, ensure_ascii=False)
+
+        for spec in specs:
+            if not self._match(spec, env_extra):
+                continue
+            if spec.background:
+                asyncio.create_task(self._run(spec, env_extra, stdin_json))
+                continue
+            result = await self._run(spec, env_extra, stdin_json)
+            if result.returncode == 2:
+                reason = result.stderr.strip() or f"hook blocked (exit 2): {spec.command}"
+                return HookBlockResult(blocked=True, reason=reason)
+        return HookBlockResult(blocked=False)

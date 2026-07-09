@@ -3,6 +3,8 @@ from norma.hook.hook import (
     HookSpec,
     HookConfig,
     HookManager,
+    HookRunResult,
+    HookBlockResult,
 )
 
 __all__ = [
@@ -10,4 +12,6 @@ __all__ = [
     "HookSpec",
     "HookConfig",
     "HookManager",
+    "HookRunResult",
+    "HookBlockResult",
 ]

@@ -11,13 +11,15 @@ NormaREPL - 交互式命令行界面
 import asyncio
 import os
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Callable, Awaitable
 
 from prompt_toolkit import PromptSession, print_formatted_text
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.completion import WordCompleter
 from prompt_toolkit.key_binding import KeyBindings
 from rich.console import Console
+
+from norma.messagebus.messagebus import MessageType
 
 from norma.core.agent_types import (
     BaseAgent,
@@ -44,12 +46,20 @@ from norma.permission import PermissionMode
 class NormaREPL:
     """交互式 REPL - 类似 Claude Code 风格"""
 
-    def __init__(self, agent: BaseAgent, cwd: str | Path):
+    def __init__(
+        self,
+        agent: BaseAgent,
+        cwd: str | Path,
+        prompt_confirm: Optional[Callable[[str], Awaitable[bool]]] = None,
+    ):
         self.agent = agent
         self.agent_render = AgentEventRenderer()
         self.running = True
         self.cwd = Path(cwd)
         self.console = Console()
+
+        # 权限确认回调：默认走 prompt_toolkit 交互；可注入便于测试
+        self.prompt_confirm = prompt_confirm or self._default_prompt_confirm
 
         # 命令系统
         self.command_registry = CommandRegistry()
@@ -154,8 +164,49 @@ class NormaREPL:
         print_formatted_text(banner)
         print()
 
+    # ---------- 权限确认（UI_PROMPT 总线订阅）----------
+
+    def _setup_permission_subscription(self) -> None:
+        """订阅 UI_PROMPT：agent 请求 ASK 时在 REPL 内交互确认并回送结果。
+
+        REPL 直接消费 ``agent.run()`` 生成器，不经总线拿事件；但权限请求是
+        经 ``UserInputManager.request_confirmation`` -> 总线 ``UI_PROMPT`` ->
+        await future 的链路。若不订阅，future 会等到超时后默认拒绝（60s 挂起）。
+        """
+        bus = getattr(self.agent, "message_bus", None)
+        uim = getattr(self.agent, "user_input_manager", None)
+        if bus is not None and uim is not None:
+            bus.subscribe(MessageType.UI_PROMPT, self._on_ui_prompt)
+
+    async def _on_ui_prompt(self, message) -> None:
+        payload = getattr(message, "payload", None) or {}
+        request_id = payload.get("request_id")
+        prompt_text = payload.get("prompt", "")
+        uim = getattr(self.agent, "user_input_manager", None)
+        if not request_id or uim is None:
+            return
+        try:
+            allowed = await self.prompt_confirm(prompt_text)
+        except Exception:  # noqa: BLE001
+            allowed = False
+        try:
+            await uim.respond_confirmation(request_id, allowed)
+        except Exception:  # noqa: BLE001
+            pass
+
+    async def _default_prompt_confirm(self, prompt_text: str) -> bool:
+        """默认权限确认：prompt_toolkit 交互式 y/N。"""
+        print_formatted_text(HTML("\n<style fg='ansiyellow' bold>⚠ 权限确认</style>"))
+        if prompt_text:
+            print_formatted_text(HTML(f"<style fg='ansicyan'>{prompt_text}</style>"))
+        answer = await self.session.prompt_async(
+            HTML("<b fg='ansiyellow'>允许执行? [y/N] </b>")
+        )
+        return answer.strip().lower() in ("y", "yes")
+
     async def run(self):
         """主循环 - 启动REPL"""
+        self._setup_permission_subscription()
         self.show_banner()
 
         while self.running:

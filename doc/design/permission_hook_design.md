@@ -103,8 +103,9 @@ PermissionChecker.check(req)
 NormaCoder 在收到 `ASK` 时调用 `UserInputManager.request_confirmation`，
 向 messagebus 发出 `UI_PROMPT`，等待 `USER_CONFIRM` / `USER_REJECT`。
 
-> 注意：当前 REPL 还未实现 UI_PROMPT 的渲染入口，调用层若没有 user_input_manager
-> 则按拒绝处理（fail-safe）。
+前端各自处理 `UI_PROMPT`：TUI 弹出 `PermissionModal`（y 允许 / n,esc 拒绝）；
+REPL 订阅 `UI_PROMPT` 后用 prompt_toolkit 交互式 y/N 确认（`prompt_confirm`
+回调可注入，便于测试）。若调用层未注入 `user_input_manager`，则按拒绝处理（fail-safe）。
 
 ### 3.4 拒绝结果
 
@@ -215,6 +216,5 @@ NormaCoder(
 
 * `PermissionChecker.check` 当前只看工具名，不看具体参数（如 Bash 的命令内容）。
   如需更细颗粒度，可以扩展为可插拔策略链。
-* REPL 尚未实现 `UI_PROMPT` 的可视化交互；目前若没注入 `user_input_manager` 则 ASK 视为拒绝。
 * HookManager 的 `match` 仅支持字符串完全匹配；未来可扩展正则 / glob。
 * AgentTool 后台任务没有持久化，进程结束即失效。

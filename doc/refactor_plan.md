@@ -59,7 +59,7 @@
 - [x] 流式渲染：assistant 文本/推理增量实时追加流式区，收尾落盘（headless 模拟事件验证）。
 - [x] 中断：`Ctrl+C` 在运行中调用 `AgentRunner.cancel()`，`TurnFinishedMessage` 收尾。
 - [x] 权限确认弹层 allow/deny 闭环（headless 验证）。
-- [x] 专项回归测试覆盖（headless、可独立运行，9/9 全绿）：TUI e2e（`test_tui_e2e.py`，mock OpenAI client，流式+非流式两轮）、TUI 前端渲染与交互（`test_tui_render.py`，思考块/多工具调用/工具成功错误标记/流式中断/权限弹窗往返）、MCP stdio（`test_mcp_stdio.py`，mock MCP 服务器子进程）、Skill（`test_skill.py`，mock 子 agent）、compact/resume（`test_compact_resume.py`，边界+微压缩）、系统提示（`test_system_prompt.py`，CLAUDE.md 注入与排序）、Reminder（`test_reminder.py`）、Hook（`test_hook.py`，环境变量/match/总线订阅）、AgentTool（`test_agent_tool.py`，前台/后台/session 复用）。
+- [x] 专项回归测试覆盖（headless、可独立运行，10/10 全绿）：TUI e2e（`test_tui_e2e.py`，mock OpenAI client，流式+非流式两轮）、TUI 前端渲染与交互（`test_tui_render.py`，思考块/多工具调用/工具成功错误标记/流式中断/命令路径/F2 模式/权限弹窗往返）、REPL 权限确认（`test_repl_permission.py`，UI_PROMPT 订阅 + 可注入 prompt_confirm，allow/deny）、MCP stdio（`test_mcp_stdio.py`，mock MCP 服务器子进程）、Skill（`test_skill.py`，mock 子 agent）、compact/resume（`test_compact_resume.py`，边界+微压缩）、系统提示（`test_system_prompt.py`，CLAUDE.md 注入与排序）、Reminder（`test_reminder.py`）、Hook（`test_hook.py`，环境变量/match/总线订阅）、AgentTool（`test_agent_tool.py`，前台/后台/session 复用）。
 - [x] 端到端真实 LLM 冒烟脚本 `python -m norma.smoke_real_llm`：读取 `~/.norma/config.json`，用真实 api_key/base_url 走非流式 `chat()` + 流式 `stream_chat()` 各一次，验证连通与解析；未配置真实 key 或不可达时 SKIP（不阻塞），可由用户在自有环境一键验证。
 
 ## P6 对齐增强（按价值择优）
@@ -72,6 +72,7 @@
 ## P7 清理与前端硬化
 - [x] 移除 3 个遗留死 agent 模块（`functioncall_agent.py`/`repo_ase_agent.py`/`step_agent.py`）：闭环死集群，引用已删除模块且含语法错误，无存活代码引用（可从 git 历史恢复）；`walk_packages` 导入失败 3 -> 0。
 - [x] 前端硬化回归 `test_tui_render.py`（7 项）：补 `test_tui_e2e.py` 未覆盖的前端渲染正确性与交互--思考块、多工具调用、工具成功(⚙)/错误(✗)标记、流式中断(Ctrl+C)、命令路径(/help 渲染 + 未知命令提示 + /clear 不误报)、F2 权限模式循环、权限弹窗往返(UI_PROMPT->弹窗->y->True)。向真实 MessageBus 发布合成事件 + Textual pilot 抽干消息泵，复现总线->post_message->渲染全链路。
+- [x] 修复 REPL 权限确认挂起：REPL 订阅 `UI_PROMPT`，回调经可注入 `prompt_confirm`（默认 prompt_toolkit y/N）回送 `respond_confirmation`，不再 60s 超时默认拒绝。回归 `test_repl_permission.py`（allow/deny）。
 - [ ] Session parent_uuid 链（分支/fork，可选，价值较低）。
 - [ ] JSON stdin + exit2 阻断式 Hook（可选；当前权限系统已覆盖工具执行门禁）。
 

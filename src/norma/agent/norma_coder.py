@@ -259,9 +259,7 @@ class NormaCoder(BaseAgent):
                 if await self._should_compact():
                     # 分层 compaction：先微压缩（无 LLM），仍超阈值再完整摘要
                     if (not await self._micro_compact()) or await self._should_compact():
-                        compact_event = await self._do_compact()
-                        if compact_event:
-                            yield compact_event
+                        await self._do_compact()
 
                 history_messages = await self.memory.pull_messages()
 
@@ -408,9 +406,7 @@ class NormaCoder(BaseAgent):
                     # 上下文超限 → 尝试 compaction
                     logger.warning("finish_reason=length, attempting compaction")
                     if (not await self._micro_compact()) or await self._should_compact():
-                        compact_event = await self._do_compact()
-                        if compact_event:
-                            yield compact_event
+                        await self._do_compact()
                     # compaction 后继续循环
 
                 else:
@@ -519,8 +515,12 @@ class NormaCoder(BaseAgent):
             )
         return changed > 0
 
-    async def _do_compact(self):
-        """执行上下文压缩：让模型总结历史消息，保留关键信息"""
+    async def _do_compact(self) -> bool:
+        """执行上下文压缩：让模型总结历史消息，保留关键信息。
+
+        返回 True 表示压缩成功（memory 已被摘要替换）；False 表示失败（如 LLM
+        不可达），此时 memory 保持不变，调用方不应误以为压缩已生效。
+        """
         logger.info("Starting context compaction")
         try:
             messages = self.memory._messages
@@ -570,10 +570,11 @@ class NormaCoder(BaseAgent):
             # 边界前的全部重放，改用摘要状态，避免 /resume 重放全量历史而使压缩失效
             self._session_log_compact_boundary(new_messages[-1].content)
             logger.info(f"Compaction complete: {len(messages)} → {len(new_messages)} messages")
+            return True
 
         except Exception as e:
             logger.error(f"Compaction failed: {e}", exc_info=True)
-        return None
+            return False
 
     # =====================================================
     # 辅助方法

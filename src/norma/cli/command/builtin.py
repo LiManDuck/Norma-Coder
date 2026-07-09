@@ -107,9 +107,15 @@ async def cmd_model(ctx: CommandContext) -> None:
 async def cmd_compact(ctx: CommandContext) -> None:
     """手动触发上下文压缩"""
     ctx.print("<style fg='ansiyellow'>正在压缩上下文...</style>")
-    await ctx.agent._do_compact()
+    ok = await ctx.agent._do_compact()
     msg_count = len(ctx.agent.memory._messages)
-    ctx.print(f"<style fg='ansigreen'>✓ 压缩完成，当前消息数: {msg_count}</style>")
+    if ok:
+        ctx.print(f"<style fg='ansigreen'>✓ 压缩完成，当前消息数: {msg_count}</style>")
+    else:
+        ctx.print(
+            f"<style fg='ansired'>✗ 压缩失败（LLM 不可达或出错），"
+            f"上下文未变更，当前消息数: {msg_count}</style>"
+        )
 
 
 async def cmd_status(ctx: CommandContext) -> None:

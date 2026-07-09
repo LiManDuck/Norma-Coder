@@ -117,8 +117,15 @@ class WriteTool(Tool):
 
 
     def mark_file_as_read(self, file_path: str):
-        """标记文件为已读取（由Read工具调用）"""
-        abs_path = os.path.abspath(file_path)
+        """标记文件为已读取（由Read工具调用）
+
+        路径规范化必须与 ReadTool/EditTool 一致，统一用 ``Path.resolve()``--
+        ``os.path.abspath`` 不解析符号链接，当 cwd 经符号链接访问时
+        （如 macOS ``/tmp``->``/private/tmp``、Windows junction），
+        Write 标记的路径与 Edit ``is_file_read`` 检查的路径不一致，
+        会导致「先读后编」门禁对刚写入的文件误判为未读而拒绝。
+        """
+        abs_path = str(Path(file_path).resolve())
         self.read_files_registry.add(abs_path)
 
     async def execute(self, tool_request: ToolRequest) -> ToolRequestResult:
@@ -198,8 +205,8 @@ class WriteTool(Tool):
                 execution_times=execution_time
             )
 
-        # 规范化为绝对路径
-        abs_path = os.path.abspath(file_path)
+        # 规范化为绝对路径（与 Read/Edit 一致用 resolve，见 mark_file_as_read 注释）
+        abs_path = str(Path(file_path).resolve())
 
         # 检查文件是否存在
         file_exists = os.path.exists(abs_path)

@@ -80,6 +80,43 @@ async def test_write_read_edit() -> bool:
     return True
 
 
+async def test_edit_gate_rejects_unread_file() -> bool:
+    """「先读后编」门禁安全契约：未读文件直接 Edit 必须被拒绝。
+
+    此前仅测了正向（Write 标记已读 -> Edit 成功），未覆盖负向安全路径--
+    若 is_file_read / registry 接线被破坏，安全门禁失效而现有用例不会报警。
+    另测 Write->Edit 跨工具路径一致性（两者须用同一路径规范化，否则 symlinked
+    cwd 下会误判）。
+    """
+    from norma.tool.write_tool.write_tool import WriteTool
+    from norma.tool.read_tool.read_tool import ReadTool
+    from norma.tool.edit_tool.edit_tool import EditTool
+
+    registry: set = set()
+    with tempfile.TemporaryDirectory() as d:
+        # 预置一个文件，但不经 Read/Write 触发标记
+        f = os.path.join(d, "unread.txt")
+        Path(f).write_text("payload\n", encoding="utf-8")
+
+        edit = EditTool(readed_files=registry)
+        # registry 为空 -> 必须拒绝
+        r = await _run(edit, "Edit",
+                       {"file_path": f, "old_string": "payload", "new_string": "P"})
+        if not r.is_error:
+            return False
+        if "read" not in r.content.lower():
+            return False
+
+        # Read 之后 -> 放行（Read 用 resolve 标记，Edit 用 resolve 检查，须一致）
+        await _run(ReadTool(read_files_registry=registry), "Read", {"file_path": f})
+        r2 = await _run(edit, "Edit",
+                        {"file_path": f, "old_string": "payload", "new_string": "P"})
+        if r2.is_error or Path(f).read_text(encoding="utf-8") != "P\n":
+            return False
+
+    return True
+
+
 # =====================================================================
 # Ls / Glob / Grep
 # =====================================================================
@@ -172,6 +209,7 @@ async def test_task_lifecycle() -> bool:
 async def _amain() -> int:
     tests = [
         ("write_read_edit", test_write_read_edit),
+        ("edit_gate_rejects_unread_file", test_edit_gate_rejects_unread_file),
         ("ls_glob_grep", test_ls_glob_grep),
         ("bash", test_bash),
         ("task_lifecycle", test_task_lifecycle),

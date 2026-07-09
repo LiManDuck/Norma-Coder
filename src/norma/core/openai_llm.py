@@ -212,6 +212,14 @@ class OpenAILLM(BaseLLM):
 
     def _parse_response(self, completion: ChatCompletion) -> LLMResponse:
         """解析 OpenAI ChatCompletion 响应为内部格式"""
+        # 防御空 choices（如 content_filter 等极端响应），与流式路径一致
+        if not completion.choices:
+            logger.warning("LLM response has no choices")
+            return LLMResponse(
+                response_message=AssistantMessage(content="", tool_calls=None),
+                finish_reason="unknown",
+            )
+
         choice: Choice = completion.choices[0]
         message = choice.message
 
@@ -242,9 +250,15 @@ class OpenAILLM(BaseLLM):
             choice.finish_reason, "unknown"
         )
 
+        # 解析推理内容（兼容 reasoning_content 字段，与流式路径一致；
+        # 此前非流式路径漏传 reason_content，导致默认 stream_mode=False 下
+        # 思考模型的推理被静默丢弃——TUI 非流式分支会读 response_message.reason_content）
+        reason_content = getattr(message, "reasoning_content", None)
+
         # 构建 AssistantMessage
         assistant_message = AssistantMessage(
             content=message.content or "",
+            reason_content=reason_content,
             tool_calls=tool_calls,
         )
 

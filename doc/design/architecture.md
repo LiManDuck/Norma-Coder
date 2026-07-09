@@ -1,6 +1,6 @@
 # Norma-Coder 目标架构设计
 
-> 状态：TUI 打通 + 前后端事件解耦 + 真正流式 + 前端硬化 **已实现**（P0–P5 完成，P6 高价值项完成，P7 硬化完成；回归 14/14）。
+> 状态：TUI 打通 + 前后端事件解耦 + 真正流式 + 前端硬化 **已实现**（P0–P5 完成，P6 高价值项完成，P7 硬化完成；回归 15/15）。
 > Textual TUI（`cli/ui/tui/app.py`）订阅进程内 MessageBus 渲染；Agent 经 `AgentRunner` 后台驱动，
 > 事件经总线发布；ASK 确认弹层闭环；流式 delta 实时渲染；Markdown 落盘渲染 + 错误可见 + 多行粘贴保留。
 > 详见 §3 与 `doc/refactor_plan.md`。

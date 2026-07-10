@@ -149,10 +149,86 @@ async def test_modal_deny() -> bool:
     return True
 
 
+async def _drive_interrupt() -> dict:
+    """驱动到弹窗出现后按 Ctrl+C 中断（而非应答），返回弹窗是否被收起等事实。"""
+    from norma.cli.cli import NormaCLI
+    from norma.cli.ui.tui.app import NormaApp, PermissionModal
+    from norma.core.tool_types import ToolRequest, ToolRequestResult
+    from norma.permission import PermissionMode
+
+    cli = NormaCLI()
+    cli.permission_checker.config.mode = PermissionMode.EDIT
+    cli.llm.default_stream_mode = False
+    cli.llm.client = _FakeClient()
+
+    # 中断发生在工具执行前（弹窗阶段），stub 仅作兜底
+    async def _stub_execute(requests):
+        return [
+            ToolRequestResult(request=r, result="ok", content="stub", is_error=False)
+            for r in requests
+        ]
+
+    cli.agent.tool_manager.execute_tools = _stub_execute  # type: ignore[assignment]
+
+    await cli.message_bus.start()
+    try:
+        app = NormaApp(
+            agent=cli.agent,
+            cwd=".",
+            message_bus=cli.message_bus,
+            user_input_manager=cli.user_input_manager,
+        )
+        async with app.run_test() as pilot:
+            await pilot.pause()
+            app.query_one("#input").value = "run echo hi"
+            await pilot.press("enter")
+
+            # 等待弹窗出现（agent 阻塞在 request_confirmation 的 future 上）
+            appeared = False
+            for _ in range(80):
+                await pilot.pause(delay=0.1)
+                if isinstance(app.screen, PermissionModal):
+                    appeared = True
+                    break
+            assert appeared, "权限弹窗从未出现（无法进入中断场景）"
+
+            # 用户在弹窗上按 Ctrl+C 中断（而非应答）
+            app.action_interrupt_or_quit()
+
+            # 轮询等待回合结束 + 弹窗被收起
+            dismissed = False
+            for _ in range(80):
+                await pilot.pause(delay=0.1)
+                if not app._is_running() and not isinstance(
+                    app.screen, PermissionModal
+                ):
+                    dismissed = True
+                    break
+
+            return {
+                "running": app._is_running(),
+                "dismissed": dismissed,
+                "screen_is_modal": isinstance(app.screen, PermissionModal),
+            }
+    finally:
+        await cli.message_bus.stop()
+
+
+async def test_modal_interrupt_dismisses() -> bool:
+    facts = await _drive_interrupt()
+    assert not facts["running"], "中断后回合应已结束"
+    assert facts["dismissed"], (
+        "中断后权限弹窗应被自动收起（不应残留孤儿弹窗遮蔽输入框）")
+    assert not facts["screen_is_modal"], "当前屏幕不应仍是 PermissionModal"
+    print("[PASS] modal interrupt dismisses orphan modal")
+    return True
+
+
 async def _amain() -> int:
     tests = [
         ("modal_allow", test_modal_allow),
         ("modal_deny", test_modal_deny),
+        ("modal_interrupt_dismisses", test_modal_interrupt_dismisses),
     ]
     failures = 0
     for name, fn in tests:

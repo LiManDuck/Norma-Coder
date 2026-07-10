@@ -615,6 +615,11 @@ class NormaApp(App):
         self.post_message(TurnFinishedMessage(ok=ok, error=error))
 
     async def on_turn_finished_message(self, message: TurnFinishedMessage) -> None:
+        # 回合结束（含中断/异常）时收起可能残留的权限弹窗：用户在弹窗上按
+        # Ctrl+C 中断时，agent 被取消、request_confirmation 的 future 在 finally
+        # 中被清理，但弹窗本身未被 dismiss -> 会留下孤儿弹窗遮蔽已重新启用的
+        # 输入框。正常 allow/deny 流程中弹窗早已被应答 dismiss，此处为 no-op。
+        self._dismiss_open_permission_modal()
         if self._stream_active:
             self._commit_stream()
         if message.interrupted:
@@ -639,6 +644,14 @@ class NormaApp(App):
             inp = self.query_one("#input", Input)
             inp.disabled = not enabled
         except Exception:
+            pass
+
+    def _dismiss_open_permission_modal(self) -> None:
+        """收起当前若仍打开的权限弹窗（回合中断/异常后的孤儿弹窗清理）。"""
+        try:
+            if isinstance(self.screen, PermissionModal):
+                self.screen.dismiss(None)
+        except Exception:  # noqa: BLE001
             pass
 
     # -----------------------------------------------------------------

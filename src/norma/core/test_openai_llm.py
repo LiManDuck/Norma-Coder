@@ -312,6 +312,48 @@ async def test_stream_usage_in_trailing_chunk() -> None:
     print("[PASS] test_stream_usage_in_trailing_chunk")
 
 
+def test_switch_model_provider_updates_default_provider() -> None:
+    """switch_model('provider/model') 应同步 _default_provider。
+
+    此前 switch_model 更新 model/base_url/api_key/client 但漏更 _default_provider，
+    导致 /model 显示仍把旧 provider 标为当前（*），且无法用 ← 标记刚切换的模型
+    （cmd_model 的显示按 _default_provider 匹配）。与 switch_provider 行为对齐。
+    """
+    llm = OpenAILLM(
+        model="m-a",
+        api_key="sk-a",
+        base_url="http://host-a/v1",
+        providers={
+            "provA": {"url": "http://host-a/v1", "api_key": "sk-a", "models": ["m-a"]},
+            "provB": {"url": "http://host-b/v1", "api_key": "sk-b", "models": ["m-b1", "m-b2"]},
+        },
+        default_provider="provA",
+    )
+    assert llm._default_provider == "provA"
+
+    llm.switch_model("provB/m-b2")
+
+    assert llm.model == "m-b2", f"model 应切换到 m-b2，实际 {llm.model!r}"
+    assert llm._default_provider == "provB", (
+        f"_default_provider 应同步到 provB，实际 {llm._default_provider!r}")
+    assert llm._base_url == "http://host-b/v1", f"base_url 应为 provB 的，实际 {llm._base_url!r}"
+    assert llm._api_key == "sk-b", f"api_key 应为 provB 的，实际 {llm._api_key!r}"
+
+    # 纯模型名（无 provider）不应改动 _default_provider
+    llm.switch_model("m-b1")
+    assert llm.model == "m-b1"
+    assert llm._default_provider == "provB", "纯模型切换不应改动 _default_provider"
+
+    # 未知 provider 应抛 ValueError
+    try:
+        llm.switch_model("provX/m")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("未知 provider 应抛 ValueError")
+    print("[PASS] test_switch_model_provider_updates_default_provider")
+
+
 def main() -> int:
     failures = 0
     for runner, name in (
@@ -328,6 +370,7 @@ def main() -> int:
         (test_stream_reasoning_accumulation, "stream_reasoning_accumulation"),
         (test_stream_tool_calls_split_across_chunks, "stream_tool_calls_split"),
         (test_stream_usage_in_trailing_chunk, "stream_usage_in_trailing_chunk"),
+        (test_switch_model_provider_updates_default_provider, "switch_model_provider_updates_default_provider"),
     ):
         try:
             if inspect.iscoroutinefunction(runner):

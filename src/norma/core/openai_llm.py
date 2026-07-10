@@ -106,6 +106,9 @@ class OpenAILLM(BaseLLM):
                     api_key=self._api_key,
                     base_url=self._base_url,
                 )
+                # 同步当前 provider，否则 /model 显示仍把旧 provider 标为当前，
+                # 且无法用 ← 标记刚切换的模型（与 switch_provider 行为一致）
+                self._default_provider = provider_name
                 logger.info(f"Switched to provider '{provider_name}', model '{model_id}'")
             else:
                 raise ValueError(f"Provider '{provider_name}' not found")

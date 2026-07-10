@@ -38,7 +38,6 @@ READ_ONLY_TOOLS: Set[str] = {
     "Ls",
     "Glob",
     "Grep",
-    "TodoWrite",   # TodoWrite 只是写入内部 todo 列表，不影响磁盘
     "TaskList",
     "TaskGet",
 }

@@ -1,7 +1,7 @@
 from typing import Any, AsyncGenerator, Mapping, Sequence, List, Optional,Union
 from dataclasses import dataclass
 
-from pydantic import BaseModel, SerializeAsAny, model_validator,Field
+from pydantic import BaseModel, Field
 from abc import ABC, abstractmethod
 from datetime import datetime
 from norma.core.llm_types import (
@@ -88,8 +88,14 @@ class AgentResponse:
 
 
 
-    @model_validator(mode='after')
-    def check_response(self) -> "AgentResponse":
+    def __post_init__(self) -> None:
+        # stdlib dataclass 的 post-init 钩子（构造后实际执行）。
+        # 此前用 pydantic ``@model_validator(mode='after')``，但 AgentResponse
+        # 是 stdlib ``@dataclass`` 而非 pydantic dataclass，validator 永不被
+        # 调用 -> response/tool_call_nums 的自动填充实为死代码（构造时传 None
+        # 就保持 None，前端可能拿到空回复）。改用 ``__post_init__`` 使自动填充
+        # 真正生效：response 为空则取末条 AssistantMessage.content；tool_call_nums
+        # 为空则按 ToolMessage 计数。已显式赋值的字段（if None 守卫）不受影响。
         if self.response is None and self.message_list:
             last_message = self.message_list[-1]
             if isinstance(last_message, AssistantMessage) and isinstance(last_message.content, str):
@@ -98,9 +104,7 @@ class AgentResponse:
                 self.response = ""
 
         if self.tool_call_nums is None:
-            self.tool_call_nums = len([msg for msg in self.message_list if isinstance(msg, ToolMessage) ])
-
-        return self
+            self.tool_call_nums = len([msg for msg in self.message_list if isinstance(msg, ToolMessage)])
 
 class BaseAgentConfig(BaseModel):
 

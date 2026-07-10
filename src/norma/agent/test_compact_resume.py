@@ -52,6 +52,26 @@ class _FakeLLM:
         )
 
 
+class _CapturingLLM:
+    """记录 chat() 收到的请求，用于断言压缩摘要的输入窗口。"""
+
+    default_stream_mode = False
+    max_context_tokens = 1000
+
+    def __init__(self) -> None:
+        self.captured_requests: list[LLMRequest] = []
+
+    def estimate_tokens(self, messages) -> int:
+        return sum(len(getattr(m, "content", "") or "") for m in messages)
+
+    async def chat(self, request: LLMRequest) -> LLMResponse:
+        self.captured_requests.append(request)
+        return LLMResponse(
+            response_message=AssistantMessage(content="摘要。", tool_calls=None),
+            finish_reason="stop",
+        )
+
+
 def _make_agent(tmp_cwd: str, sm: SessionManager) -> NormaCoder:
     return NormaCoder(
         llm=_FakeLLM(),  # type: ignore[arg-type]
@@ -361,6 +381,48 @@ async def test_apply_permission_uses_readonly_hint(
     print("[PASS] test_apply_permission_uses_readonly_hint")
 
 
+async def test_compact_preserves_original_request(
+    tmp_cwd: str, config_home: str
+) -> None:
+    """长对话压缩时，摘要输入应保留开头的原始用户请求。
+
+    旧 ``history_text[-8000:]`` 仅取末尾窗口，当历史超过 8000 字符时会丢弃
+    开头的原始请求 -> 摘要忘记最初目标（codeagent 长任务的关键退化）。改「开头
+    + 近期」双窗口后，原始请求（位于 history_text 开头）应出现在摘要输入中。
+    """
+    os.environ["NORMA_CONFIG_HOME"] = config_home
+    sm = SessionManager(cwd=tmp_cwd)
+    sm.create(title="window-test")
+    agent = NormaCoder(
+        llm=_CapturingLLM(),  # type: ignore[arg-type]
+        cwd=tmp_cwd,
+        name="TestCoder",
+        enable_subagent=False,
+        enable_skill=False,
+        session_manager=sm,
+    )
+    llm = agent.llm  # type: ignore[assignment]
+
+    # 原始请求（位于历史开头）+ 大量 filler 使 history_text > 8000
+    original = "实现用户登录功能并写测试"
+    await agent.memory.push_messages([UserMessage(content=original)])
+    filler = "Y" * 500
+    for _ in range(20):
+        await agent.memory.push_messages([
+            AssistantMessage(content=filler, tool_calls=None),
+        ])
+
+    await agent._do_compact()
+
+    assert len(llm.captured_requests) == 1, "压缩应恰好调用一次 chat"
+    summary_input_msg = llm.captured_requests[0].messages[-1]
+    assert isinstance(summary_input_msg, UserMessage), "末条应为摘要输入 UserMessage"
+    assert original in summary_input_msg.content, (
+        f"摘要输入应保留原始请求 {original!r}（旧 [-8000:] 会丢弃开头），"
+        f"实际前 200 字符: {summary_input_msg.content[:200]!r}")
+    print("[PASS] test_compact_preserves_original_request")
+
+
 async def main() -> int:
     failures = 0
     for runner, name in (
@@ -371,6 +433,8 @@ async def main() -> int:
         (test_micro_compact, "micro_compact"),
         (test_apply_permission_uses_readonly_hint,
          "apply_permission_uses_readonly_hint"),
+        (test_compact_preserves_original_request,
+         "compact_preserves_original_request"),
     ):
         with tempfile.TemporaryDirectory() as tmp_cwd, \
                 tempfile.TemporaryDirectory() as config_home:

@@ -585,7 +585,20 @@ class NormaCoder(BaseAgent):
                     history_text_parts.append(f"[Tool Result: {msg.tool_result.tool_call_name}]: {msg.content[:500]}")
 
             history_text = "\n".join(history_text_parts)
-            compact_messages.append(UserMessage(content=history_text[-8000:]))
+            # 长对话压缩窗口：旧 ``history_text[-8000:]`` 仅取末尾，会丢弃开头的
+            # 原始用户请求与早期工作，使摘要忘记最初目标（codeagent 长任务的关键
+            # 退化）。改为「开头 + 近期」双窗口：保留前 2000 字符（含原始请求与
+            # 早期上下文）与末 6000 字符（近期进展），中段省略。短历史（<=8000）
+            # 原样透传，行为不变。
+            if len(history_text) <= 8000:
+                summary_input = history_text
+            else:
+                summary_input = (
+                    history_text[:2000]
+                    + "\n\n...[中段历史已省略]...\n\n"
+                    + history_text[-6000:]
+                )
+            compact_messages.append(UserMessage(content=summary_input))
 
             llm_request = LLMRequest(messages=compact_messages)
             llm_response = await self.llm.chat(llm_request)

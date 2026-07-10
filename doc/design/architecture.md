@@ -1,6 +1,6 @@
 # Norma-Coder 目标架构设计
 
-> 状态：TUI 打通 + 前后端事件解耦 + 真正流式 + 前端硬化 **已实现**（P0–P5 完成，P6 高价值项完成，P7 硬化完成；回归 15/15）。
+> 状态：TUI 打通 + 前后端事件解耦 + 真正流式 + 前端硬化 **已实现**（P0–P5 完成，P6 高价值项完成，P7 硬化完成；回归 22/22）。
 > Textual TUI（`cli/ui/tui/app.py`）订阅进程内 MessageBus 渲染；Agent 经 `AgentRunner` 后台驱动，
 > 事件经总线发布；ASK 确认弹层闭环；流式 delta 实时渲染；Markdown 落盘渲染 + 错误可见 + 多行粘贴保留。
 > 详见 §3 与 `doc/refactor_plan.md`。
@@ -80,7 +80,7 @@
 - **AgentRunner**：桥接 generator → MessageBus，使 TUI 完全解耦；SDK 用户仍可直接消费 generator。
 - **MessageBus 作为 TUI 主干**：TUI 订阅 agent 事件消息渲染；发布用户输入与确认。
 - **真正流式**：`stream_chat` 增量 yield delta；agent 循环 yield `AgentTextDeltaEvent` 等。
-- **TUI 选型 textual**（已为依赖；plan 明确要 TUI）。布局细节对齐 hermes-agent（待研究结论）。
+- **TUI 选型 textual**（已为依赖；plan 明确要 TUI）。布局细节对齐 hermes-agent（研究完成，详见 §4.2）。
 
 ### 3.2 新增事件类型（对齐 `cli_design.md` 的 TextChunk/Thinking/ToolUse/Complete 愿景）
 - `AgentTextDeltaEvent`：assistant 文本增量
@@ -108,8 +108,22 @@
 | 系统提示 | list[str] 块 + 动态段注册 + env + CLAUDE.md | 已结构化：核心md + 环境段(cwd/平台) + CLAUDE.md(用户级+项目级祖先遍历) |
 | `<system-reminder>` | 注入 memory/date/skills | reminder 系统已具备 |
 
-### 4.2 对齐 hermes-agent（研究进行中）
-- 前端 TUI 栈与布局、事件流形态、流式渲染方式 → 待研究结论后填充本节并细化 §3 的 TUI 部分。
+### 4.2 对齐 hermes-agent（研究完成）
+hermes-agent 是「Python 后端 + 多语言前端」的多端架构，与 Norma-Coder「纯 Python 单进程」路线显著不同。
+
+| 维度 | hermes-agent | Norma-Coder |
+|---|---|---|
+| 前端 | 多端：Ink（TS+React）TUI、Electron+React 桌面、Vite Web、旧 prompt_toolkit CLI | 单端：Textual TUI（+ prompt_toolkit REPL 兜底） |
+| 进程模型 | 多进程：TUI 把 Python 网关作子进程拉起、stdio 交换 JSON-RPC；桌面/Web 走 WebSocket | 单进程 asyncio |
+| 解耦方式 | JSON-RPC over stdio/WS + `Transport` 抽象（Stdio/WS/Tee）+ contextvar 按连接路由（请求/响应 + 服务端推送事件帧，**非 pub/sub 总线**） | 进程内 asyncio MessageBus pub/sub，零序列化 |
+| 流式 | agent 跑在线程，`stream_callback(delta)` 入线程安全 `queue.Queue`，网关发合并的 `message.delta`/`reasoning.delta` JSON-RPC 帧（WS ~33ms 合并） | 原生 async generator 直接 yield 增量事件入总线，无跨线程桥接 |
+| 主循环 | `run_conversation()`：finish_reason 驱动 + `iteration_budget`/`max_iterations` 双约束 + per-provider transport 归一化 finish_reason | finish_reason 驱动（stop/tool_calls/length/content_filter） |
+| 工具执行 | 顺序/并发双模式（`concurrent.futures` 线程池，有 worker 上限）；`tool_guardrails` 幂等/变更分类 + `approval.request` JSON-RPC 事件 | 只读并发/写串行分区（`Tool.is_readonly`）；权限静态门 + PreToolUse hook 阻断 + ASK 弹层 |
+| 压缩 | `conversation_compression`/`context_compressor` 分层 | `_micro_compact`（无 LLM 截断旧 tool_result）+ `_do_compact`（LLM 摘要）分层 |
+
+**关键差异与权衡**：hermes 以「序列化边界 + 多进程生命周期 + 线程/队列桥接（GIL 竞争、token 合并）」为代价，换来多客户端触达（桌面/Web/iOS/聊天平台）与前端语言各取所长；Norma-Coder 牺牲跨客户端触达，换来端到端单进程 asyncio 的零序列化、原生流式、紧耦合易调试。主循环两者均 finish_reason 驱动、均有权限门 + 分层压缩，后端逻辑对齐度较高。Norma-Coder 的 Textual TUI 直接订阅进程内总线，无需 hermes 的 stdio/WS 网关层，更轻量但前端不可跨进程复用。
+
+关键文件：`ui-tui/`（Ink TUI）、`apps/desktop/DESIGN.md`、`tui_gateway/{entry,ws,transport,event_publisher,server}.py`、`agent/{conversation_loop,tool_executor,tool_guardrails}.py`、`agent/transports/`。
 
 ## 5. 非目标（本轮不做）
 - 不重写已可用的 MCP/Session/Permission/Hook/Skill/Command 核心，仅做必要接入与清理。

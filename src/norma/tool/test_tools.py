@@ -307,6 +307,53 @@ async def test_edit_atomic_preserves_original_on_failure() -> bool:
     return True
 
 
+async def test_write_overwrite_atomic_preserves_original_on_failure() -> bool:
+    """Write 覆盖已存在文件须原子：写入失败时原文件不得被截断/损坏。
+
+    WriteTool._atomic_write 此前用 ``shutil.move(temp_path, file_path)`` 收尾。
+    在 Windows 上覆盖已存在文件时，``os.rename`` 抛 FileExistsError，
+    ``shutil.move`` 回退到 ``copy2`` + ``unlink``（字节拷贝，**非原子**）--
+    拷贝中途崩溃会截断/损坏目标文件，使「原子写入」名不副实（本机为 Windows，
+    覆盖是编辑主路径）。改用 ``os.replace``（Windows/POSIX 均原子替换）后，
+    失败时原文件完整保留。本用例模拟 ``os.replace`` 失败，断言原文件不变、
+    无残留临时文件、工具报错；并间接锁定「走 os.replace 而非 shutil.move」--
+    旧实现（shutil.move）不经 os.replace，patch 无效、写入照常成功 -> 用例 FAIL。
+    """
+    from norma.tool.write_tool.write_tool import WriteTool
+
+    registry: set = set()
+    with tempfile.TemporaryDirectory() as d:
+        f = os.path.join(d, "dst.txt")
+        original = "ORIGINAL-CONTENT\nline2\n"
+        Path(f).write_text(original, encoding="utf-8")
+        # 标记已读，使 Write 通过「先读后编」门禁（覆盖已存在文件所需）
+        registry.add(str(Path(f).resolve()))
+
+        write = WriteTool(read_files_registry=registry)
+        real_replace = os.replace
+        def _boom(*a, **k):  # noqa: ANN001
+            raise OSError("simulated replace failure")
+        os.replace = _boom
+        try:
+            r = await _run(write, "Write", {
+                "file_path": f, "content": "NEW-CONTENT\n",
+            })
+        finally:
+            os.replace = real_replace
+
+        # 工具须报错
+        if not r.is_error:
+            return False
+        # 原文件必须完整保留（未被截断/损坏）--原子性核心
+        if Path(f).read_text(encoding="utf-8") != original:
+            return False
+        # 无残留临时文件
+        leftovers = [p for p in os.listdir(d) if p.startswith(".tmp_write_")]
+        if leftovers:
+            return False
+    return True
+
+
 # =====================================================================
 # 入口
 # =====================================================================
@@ -322,6 +369,8 @@ async def _amain() -> int:
          test_execute_tool_error_content_is_valid_json),
         ("edit_atomic_preserves_original_on_failure",
          test_edit_atomic_preserves_original_on_failure),
+        ("write_overwrite_atomic_preserves_original_on_failure",
+         test_write_overwrite_atomic_preserves_original_on_failure),
     ]
     failures = 0
     for name, fn in tests:

@@ -341,8 +341,12 @@ class WriteTool(Tool):
             # 计算内容哈希
             content_hash = hashlib.md5(content.encode('utf-8')).hexdigest()
 
-            # 原子移动到目标位置
-            shutil.move(temp_path, file_path)
+            # 原子替换到目标位置：必须用 os.replace 而非 shutil.move。
+            # shutil.move 在覆盖已存在文件时，Windows 上 os.rename 会抛
+            # FileExistsError -> 回退到 copy2+unlink（字节拷贝，非原子），
+            # 拷贝中途崩溃会截断/损坏目标文件。os.replace 在 Windows/POSIX
+            # 均原子替换已存在文件，与 EditTool 一致。
+            os.replace(temp_path, file_path)
 
             bytes_written = len(content.encode('utf-8'))
             return bytes_written, content_hash

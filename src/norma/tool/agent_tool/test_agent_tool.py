@@ -5,6 +5,7 @@
 - 缺 prompt -> is_error
 - 后台模式：run_background=true 立即返回 running；同 session_id 空 prompt 查询 -> done + response
 - session 复用：同 session_id 复用既有 session
+- 后台运行中再发前台调用 -> 被守卫拒绝（status=running），不与后台并发跑同一子 agent
 
 运行：``python -m norma.tool.agent_tool.test_agent_tool``
 """
@@ -50,6 +51,33 @@ class _FakeAgent:
 
 def _factory(name=None):
     return _FakeAgent(name=name)
+
+
+class _SlowAgent:
+    """子 agent mock：run() 在 gate 被 set 之前一直挂起，确保后台任务持续 running。
+
+    用于复现「后台任务运行中、前台再调用同 session」的竞态场景。
+    """
+
+    def __init__(self, name: Optional[str] = None):
+        self.name = name or "slow-sub"
+        self.calls = 0
+        self.gate = asyncio.Event()
+
+    async def run(self, prompt: str) -> AsyncGenerator[AgentResponse, None]:
+        self.calls += 1
+        await self.gate.wait()
+        yield AgentResponse(
+            agent_name=self.name,
+            input_message=[],
+            tools=[],
+            prompt_usage=None,
+            event_list=[],
+            message_list=[],
+            response=f"SLOW<{prompt}>",
+            tool_call_sequence=None,
+            tool_call_nums=0,
+        )
 
 
 async def test_foreground() -> None:
@@ -129,6 +157,63 @@ async def test_session_reuse() -> None:
     print("[PASS] session reuse")
 
 
+async def test_foreground_during_background() -> None:
+    """后台任务 running 中再发前台调用：守卫应拒绝，避免并发跑同一子 agent。"""
+    slow = _SlowAgent(name="slow")
+    tool = AgentTool(agent_factory=lambda name=None: slow)
+    sid = "race-session"
+
+    # 1) 启动后台任务（卡在 gate 上 -> 持续 running）
+    bg = ToolRequest(
+        tool_call_id="r1", tool_call_name="Agent",
+        tool_call_arguments={
+            "prompt": "长任务", "run_background": True, "session_id": sid,
+        },
+    )
+    res = await tool.execute(bg)
+    assert json.loads(res.content)["status"] == "running"
+    await asyncio.sleep(0.05)  # 让 _job 进入 await self._consume_agent
+    session = tool._sessions[sid]
+    assert (
+        session.background_task is not None
+        and not session.background_task.done()
+    ), "后台任务应仍在运行"
+    calls_before = slow.calls
+    assert calls_before == 1, f"后台应已调用一次 run()，实际 {calls_before}"
+
+    # 2) 后台仍 running 时发起前台调用（同 session）-> 守卫拦截
+    fg = ToolRequest(
+        tool_call_id="r2", tool_call_name="Agent",
+        tool_call_arguments={"prompt": "想立即要结果", "session_id": sid},
+    )
+    fres = await tool.execute(fg)
+    fp = json.loads(fres.content)
+    assert fp["status"] == "running", f"前台应在后台 running 时返回 running: {fp}"
+    assert fres.is_error is False
+    assert slow.calls == calls_before, (
+        "前台被守卫拦截后不应再调用子 agent.run()（否则即并发竞态）"
+    )
+
+    # 3) 放行后台任务并等待完成
+    slow.gate.set()
+    done = None
+    for _ in range(30):
+        qres = await tool.execute(ToolRequest(
+            tool_call_id="r3", tool_call_name="Agent",
+            tool_call_arguments={"prompt": "", "session_id": sid},
+        ))
+        qp = json.loads(qres.content)
+        if qp.get("status") == "done":
+            done = qp
+            break
+        await asyncio.sleep(0.05)
+    assert done is not None, "放行后后台任务应完成"
+    assert "SLOW<长任务>" in done.get("response", ""), (
+        f"后台响应应来自首次调用: {done}"
+    )
+    print("[PASS] foreground during running background -> guarded")
+
+
 async def main() -> int:
     failures = 0
     for fn in (
@@ -136,6 +221,7 @@ async def main() -> int:
         test_missing_prompt,
         test_background_and_query,
         test_session_reuse,
+        test_foreground_during_background,
     ):
         try:
             await fn()

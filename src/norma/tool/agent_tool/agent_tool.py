@@ -220,6 +220,29 @@ class AgentTool(Tool):
         prompt: str,
         start: float,
     ) -> ToolRequestResult:
+        # 防止与同 session 的后台任务并发跑同一子 agent：两个 agent.run() 会交错
+        # 篡改子 agent 的 memory / 事件流。后台任务仍运行时拒绝前台执行，引导
+        # 调用方用「空 prompt + session_id」查询进度（与 _run_background 的守卫一致）。
+        if (
+            session.background_task is not None
+            and not session.background_task.done()
+        ):
+            payload = {
+                "status": "running",
+                "session_id": session.session_id,
+                "message": (
+                    "a background task is still running on this session; "
+                    "query it with empty prompt + session_id instead of "
+                    "starting a foreground run"
+                ),
+            }
+            return ToolRequestResult(
+                request=tool_request,
+                result=payload,
+                content=json.dumps(payload, ensure_ascii=False),
+                is_error=False,
+                execution_times=time.time() - start,
+            )
         try:
             response = await self._consume_agent(session.agent, prompt)
             session.last_response = response.response or ""

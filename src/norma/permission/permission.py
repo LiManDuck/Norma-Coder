@@ -161,8 +161,19 @@ class PermissionChecker:
 
     # ---------- 公开 API ----------
 
-    def check(self, tool_request: ToolRequest) -> PermissionDecision:
-        """对单个工具请求做权限决策"""
+    def check(
+        self,
+        tool_request: ToolRequest,
+        is_readonly: bool = False,
+        is_destructive: bool = False,
+    ) -> PermissionDecision:
+        """对单个工具请求做权限决策。
+
+        ``is_readonly`` / ``is_destructive`` 来自工具实例自报的注解（如 MCP
+        工具的 ``readOnlyHint`` / ``destructiveHint``）--内置工具按名落入静态
+        分类集合，MCP 工具名带 ``mcp__`` 前缀不在任何静态集合中，需靠注解才能
+        正确分类（否则只读 MCP 工具在 EDIT 模式会被「未知 -> ASK」误询问）。
+        """
         tool_name = tool_request.tool_call_name
 
         # 1) per-tool 显式配置优先
@@ -178,7 +189,11 @@ class PermissionChecker:
             return PermissionDecision.ALLOW
 
         if mode == PermissionMode.PLAN:
-            if tool_name in self.read_only_tools:
+            # 静态分类优先于自报注解：危险工具即便误报 is_readonly 仍 DENY，
+            # 防止错误/恶意注解把危险工具「洗白」为只读而绕过 PLAN 门禁。
+            if tool_name in self.dangerous_tools:
+                return PermissionDecision.DENY
+            if tool_name in self.read_only_tools or is_readonly:
                 return PermissionDecision.ALLOW
             return PermissionDecision.DENY
 
@@ -186,6 +201,11 @@ class PermissionChecker:
         if tool_name in self.read_only_tools or tool_name in self.write_tools:
             return PermissionDecision.ALLOW
         if tool_name in self.dangerous_tools:
+            return PermissionDecision.ASK
+        # 静态集合未覆盖（如 mcp__ 工具）：信任自报注解
+        if is_readonly:
+            return PermissionDecision.ALLOW
+        if is_destructive:
             return PermissionDecision.ASK
         # 未知工具 -> 询问
         return PermissionDecision.ASK

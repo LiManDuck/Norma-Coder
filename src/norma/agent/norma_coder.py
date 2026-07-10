@@ -640,7 +640,14 @@ class NormaCoder(BaseAgent):
         denied: dict[str, ToolRequestResult] = {}
 
         for req in tool_requests:
-            decision = self.permission_checker.check(req)
+            # 查工具实例的自报注解（MCP 工具的 readOnlyHint/destructiveHint），
+            # 透传给权限检查器，使其能正确分类不在静态集合中的 mcp__ 工具。
+            tool = self.tool_manager.get_tool(req.tool_call_name)
+            is_ro = bool(getattr(tool, "is_readonly", False)) if tool else False
+            is_de = bool(getattr(tool, "is_destructive", False)) if tool else False
+            decision = self.permission_checker.check(
+                req, is_readonly=is_ro, is_destructive=is_de
+            )
 
             if decision == PermissionDecision.ALLOW:
                 allowed.append(req)

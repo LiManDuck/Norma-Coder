@@ -104,6 +104,38 @@ def test_tool_names_match_classification_constants() -> None:
     assert "bash" not in pc.read_only_tools
 
 
+def test_tool_annotation_hints_classify_mcp_tools() -> None:
+    """工具实例自报的 is_readonly/is_destructive 注解（MCP readOnlyHint 等）
+    应被 check 用于分类不在静态集合中的 mcp__ 工具。
+
+    此前 MCPTool.is_readonly/is_destructive 被解析但权限检查器从不查阅--只读
+    MCP 工具在 EDIT 模式被「未知 -> ASK」误询问，破坏性 MCP 工具仅靠兜底命中。
+    """
+    # mcp__ 前缀工具不在任何静态集合
+    mcp_name = "mcp__srv__read_file"
+    pc_edit = PermissionChecker(config=PermissionConfig(mode=PermissionMode.EDIT))
+    pc_plan = PermissionChecker(config=PermissionConfig(mode=PermissionMode.PLAN))
+
+    # 无注解：未知工具 -> EDIT ASK / PLAN DENY（兜底，不变）
+    assert pc_edit.check(_req(mcp_name)) == PermissionDecision.ASK
+    assert pc_plan.check(_req(mcp_name)) == PermissionDecision.DENY
+
+    # is_readonly=True：视同 Read/Ls -> EDIT ALLOW / PLAN ALLOW（修复核心）
+    assert pc_edit.check(_req(mcp_name), is_readonly=True) == PermissionDecision.ALLOW
+    assert pc_plan.check(_req(mcp_name), is_readonly=True) == PermissionDecision.ALLOW
+
+    # is_destructive=True：视同 Bash -> EDIT ASK / PLAN DENY（显式分类，非兜底）
+    de_name = "mcp__srv__delete_file"
+    assert pc_edit.check(_req(de_name), is_destructive=True) == PermissionDecision.ASK
+    assert pc_plan.check(_req(de_name), is_destructive=True) == PermissionDecision.DENY
+
+    # 注解不覆盖静态集合：Bash 即便误报 is_readonly 仍按危险工具 ASK
+    # （静态分类优先于注解，防恶意/错误注解把危险工具「洗白」为只读）
+    assert pc_edit.check(_req("Bash"), is_readonly=True) == PermissionDecision.ASK
+    # Read 即便误报 is_destructive 仍按只读工具 ALLOW
+    assert pc_edit.check(_req("Read"), is_destructive=True) == PermissionDecision.ALLOW
+
+
 async def _amain() -> int:
     tests = [
         ("auto_allows_everything", test_auto_allows_everything),
@@ -112,6 +144,8 @@ async def _amain() -> int:
         ("explicit_per_tool_overrides_mode", test_explicit_per_tool_overrides_mode),
         ("tool_names_match_classification_constants",
          test_tool_names_match_classification_constants),
+        ("tool_annotation_hints_classify_mcp_tools",
+         test_tool_annotation_hints_classify_mcp_tools),
     ]
     failures = 0
     for name, fn in tests:

@@ -281,6 +281,86 @@ async def test_micro_compact(tmp_cwd: str, config_home: str) -> None:
     print("[PASS] test_micro_compact")
 
 
+async def test_apply_permission_uses_readonly_hint(
+    tmp_cwd: str, config_home: str
+) -> None:
+    """_apply_permission 应把工具实例的 is_readonly 注解透传给权限检查器。
+
+    验证 MCP 注解接线的「胶水」层：仅注册一个 is_readonly=True 的 mcp__ 工具，
+    EDIT 模式下应被放行（注解透传生效）；同名的无注解工具则 ASK -> 无总线拒绝，
+    证明放行源自注解而非兜底。若接线被破坏（忘记透传 is_readonly），只读工具会
+    落到 ASK -> 无 user_input_manager -> 拒绝，本用例失败。
+    """
+    os.environ["NORMA_CONFIG_HOME"] = config_home
+    from norma.permission import (
+        PermissionChecker,
+        PermissionConfig,
+        PermissionMode,
+    )
+    from norma.core.tool_types import Tool, ToolRequestResult
+
+    sm = SessionManager(cwd=tmp_cwd)
+    agent = _make_agent(tmp_cwd, sm)
+    agent.permission_checker = PermissionChecker(
+        config=PermissionConfig(mode=PermissionMode.EDIT)
+    )
+
+    class _ROTool(Tool):
+        @property
+        def name(self) -> str:
+            return "mcp__srv__read_file"
+
+        @property
+        def description(self) -> str:
+            return "readonly mcp tool"
+
+        @property
+        def is_readonly(self) -> bool:
+            return True
+
+        async def execute(self, req):  # noqa: D401
+            return ToolRequestResult(
+                request=req, result="ok", content="ok", is_error=False
+            )
+
+    class _BareTool(Tool):
+        @property
+        def name(self) -> str:
+            return "mcp__srv__mystery"
+
+        @property
+        def description(self) -> str:
+            return "no annotation"
+
+        async def execute(self, req):  # noqa: D401
+            return ToolRequestResult(
+                request=req, result="ok", content="ok", is_error=False
+            )
+
+    agent.tool_manager.register_tool(_ROTool())
+    agent.tool_manager.register_tool(_BareTool())
+
+    # 只读注解工具 -> EDIT 应 ALLOW（_apply_permission 透传 is_readonly）
+    ro_req = ToolRequest(
+        tool_call_id="ro1", tool_call_name="mcp__srv__read_file",
+        tool_call_arguments={},
+    )
+    allowed, denied = await agent._apply_permission([ro_req])
+    assert ro_req in allowed, "只读 MCP 工具应被注解放行（hints 已透传）"
+    assert "ro1" not in denied
+
+    # 无注解 mcp__ 工具 -> EDIT ASK -> 无 user_input_manager 默认拒绝
+    # （证明上一条放行是注解起作用，而非兜底放行所有 mcp__ 工具）
+    bare_req = ToolRequest(
+        tool_call_id="bare1", tool_call_name="mcp__srv__mystery",
+        tool_call_arguments={},
+    )
+    allowed2, denied2 = await agent._apply_permission([bare_req])
+    assert bare_req not in allowed2, "无注解 MCP 工具应 ASK -> 无总线拒绝"
+    assert "bare1" in denied2
+    print("[PASS] test_apply_permission_uses_readonly_hint")
+
+
 async def main() -> int:
     failures = 0
     for runner, name in (
@@ -289,6 +369,8 @@ async def main() -> int:
         (test_restore_tool_calls_roundtrip, "restore_tool_calls_roundtrip"),
         (test_restore_tool_error_flag, "restore_tool_error_flag"),
         (test_micro_compact, "micro_compact"),
+        (test_apply_permission_uses_readonly_hint,
+         "apply_permission_uses_readonly_hint"),
     ):
         with tempfile.TemporaryDirectory() as tmp_cwd, \
                 tempfile.TemporaryDirectory() as config_home:

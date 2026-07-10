@@ -201,6 +201,9 @@ class NormaCoder(BaseAgent):
 
         all_tools = default_tools + (tools or [])
         self.tool_manager = NormaArtifact(tools=all_tools)
+        # 保留「已读文件」注册表引用：/new 开启新对话时清空它，使「先读后编」
+        # 门禁在新对话里重新生效（旧对话读过、但新对话未读的文件不应直接放行编辑）。
+        self._read_files_registry = read_files_registry
 
         # ---- 系统提示 + memory ----
         self.system_prompt = SystemPromptService.get_claude_code_system_prompt(

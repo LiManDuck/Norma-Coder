@@ -21,6 +21,12 @@ async def cmd_new(ctx: CommandContext) -> None:
     )
     ctx.agent.memory._messages = [SystemMessage(content=system_prompt)]
 
+    # 清空「已读文件」注册表：新对话里「先读后编」门禁应重新生效，
+    # 旧对话读过但新对话未读的文件不应直接放行编辑（文件可能已被外部改动）。
+    registry = getattr(ctx.agent, "_read_files_registry", None)
+    if registry is not None:
+        registry.clear()
+
     # 切换到新的 session
     sm = getattr(ctx.agent, "session_manager", None)
     if sm is not None:

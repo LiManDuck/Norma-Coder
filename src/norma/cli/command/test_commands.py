@@ -143,6 +143,27 @@ async def test_compact_honest_failure(tmp_cwd: str, config_home2: str) -> None:
     print("[PASS] test_compact_honest_failure")
 
 
+async def test_new_clears_read_registry(tmp_cwd: str, config_home: str) -> None:
+    """/new 应清空「已读文件」注册表，使新对话的「先读后编」门禁重新生效。"""
+    agent = _make_agent(tmp_cwd, config_home, _FakeLLM())
+    repl, reg, outputs = _make_repl(agent, tmp_cwd)
+
+    # 模拟旧对话读过两个文件
+    registry = getattr(agent, "_read_files_registry", None)
+    assert registry is not None, "agent 应暴露 _read_files_registry"
+    registry.add("/old/conversation/file_a.py")
+    registry.add("/old/conversation/file_b.py")
+    assert len(registry) == 2
+
+    await _run(reg, repl, "/new")
+
+    assert len(registry) == 0, (
+        f"/new 后已读注册表应清空，实际 {len(registry)}: {registry}")
+    # 同时确认 memory 被重置（仅剩 system 消息）
+    assert len(agent.memory._messages) == 1, "/new 应重置 memory 为单条 system"
+    print("[PASS] test_new_clears_read_registry")
+
+
 async def _amain() -> int:
     # 每个用例独立的临时目录与 config_home，互不污染 ~/.norma
     def _mk():
@@ -154,6 +175,7 @@ async def _amain() -> int:
         ("all_commands_execute", test_all_commands_execute(*_mk())),
         ("compact_honest_success", test_compact_honest_success(*_mk())),
         ("compact_honest_failure", test_compact_honest_failure(*_mk())),
+        ("new_clears_read_registry", test_new_clears_read_registry(*_mk())),
     ]
     failures = 0
     for name, coro in tests:

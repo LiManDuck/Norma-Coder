@@ -261,6 +261,53 @@ async def test_execute_tool_error_content_is_valid_json() -> bool:
 
 
 # =====================================================================
+# Edit 原子写入
+# =====================================================================
+
+async def test_edit_atomic_preserves_original_on_failure() -> bool:
+    """Edit 写入须原子：写入失败时原文件不得被截断/丢失。
+
+    此前 EditTool 直接 ``open(file, 'w')`` 写目标文件，写入中途崩溃（进程
+    中断/OOM/磁盘满）会留下半截文件，对代码编辑工具而言是严重的数据丢失。
+    改为临时文件 + ``os.replace`` 后，失败时原文件完整保留。本用例模拟
+    ``os.replace`` 失败，断言原文件内容不变、无残留临时文件、且工具报错。
+    """
+    from norma.tool.edit_tool.edit_tool import EditTool
+
+    registry: set = set()
+    with tempfile.TemporaryDirectory() as d:
+        f = os.path.join(d, "src.txt")
+        original = "line1\nline2\nline3\n"
+        Path(f).write_text(original, encoding="utf-8")
+        registry.add(str(Path(f).resolve()))
+
+        edit = EditTool(readed_files=registry)
+        # 模拟 os.replace 失败（磁盘满/权限等），验证原文件不被破坏
+        real_replace = os.replace
+        def _boom(*a, **k):  # noqa: ANN001
+            raise OSError("simulated replace failure")
+        os.replace = _boom
+        try:
+            r = await _run(edit, "Edit", {
+                "file_path": f, "old_string": "line2", "new_string": "LINE2",
+            })
+        finally:
+            os.replace = real_replace
+
+        # 工具须报错
+        if not r.is_error:
+            return False
+        # 原文件必须完整保留（未被截断）
+        if Path(f).read_text(encoding="utf-8") != original:
+            return False
+        # 无残留临时文件
+        leftovers = [p for p in os.listdir(d) if p.startswith(".tmp_edit_")]
+        if leftovers:
+            return False
+    return True
+
+
+# =====================================================================
 # 入口
 # =====================================================================
 
@@ -273,6 +320,8 @@ async def _amain() -> int:
         ("task_lifecycle", test_task_lifecycle),
         ("execute_tool_error_content_is_valid_json",
          test_execute_tool_error_content_is_valid_json),
+        ("edit_atomic_preserves_original_on_failure",
+         test_edit_atomic_preserves_original_on_failure),
     ]
     failures = 0
     for name, fn in tests:

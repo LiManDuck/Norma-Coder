@@ -309,11 +309,25 @@ class EditTool(Tool):
             # 生成差异报告
             diff = self._generate_diff(original_content, new_content, abs_file_path)
 
-            with open(abs_file_path, 'w', encoding='utf-8') as f:
-                f.write(new_content)
+            # 原子写入：先写临时文件再 os.replace，避免写入中途崩溃/中断（Ctrl+C、
+            # OOM、磁盘满）导致目标文件被截断丢失。与 WriteTool._atomic_write 一致。
+            temp_fd, temp_path = tempfile.mkstemp(
+                dir=os.path.dirname(abs_file_path), prefix='.tmp_edit_'
+            )
+            try:
+                with os.fdopen(temp_fd, 'w', encoding='utf-8') as temp_file:
+                    temp_file.write(new_content)
+                    temp_file.flush()
+                    os.fsync(temp_fd)
+                os.replace(temp_path, abs_file_path)
+            except Exception:
+                try:
+                    os.unlink(temp_path)
+                except Exception:
+                    pass
+                raise
 
-
-            # 成功结果  
+            # 成功结果
             execution_time = time.time() - start_time
             result_dict = {
                 "success": True,

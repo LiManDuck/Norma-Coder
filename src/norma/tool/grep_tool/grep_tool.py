@@ -341,10 +341,12 @@ class GrepTool(Tool):
                     if context_after:
                         cmd.extend(['-A', str(context_after)])
             
-            # 添加显示文件名（多文件搜索时）
-            if len(batch) > 1:
-                cmd.append('-H')
-            
+            # 始终显示文件名前缀（-H）。单文件也必须加：否则 grep 输出无文件名，
+            # _parse_content_output / _parse_count_output 均假设 'filename:...' 前缀，
+            # 单文件 count 模式会丢全部匹配（grep -c 输出裸数字无 ':'）、
+            # content 模式会把行号/匹配行误当文件名。-l 模式 -H 冗余但无害。
+            cmd.append('-H')
+
             cmd.append(pattern)
             cmd.extend(batch)
             
@@ -481,42 +483,41 @@ class GrepTool(Tool):
         return results
 
     def _parse_content_output(self, stdout: str, show_line_numbers: Optional[bool]) -> Dict[str, Any]:
-        """解析content模式输出"""
+        """解析content模式输出
+
+        grep -H -n 输出 ``path:linenum:content``。path 在 Windows 上含盘符冒号
+        （``C:\\Users\\...``），从左 ``split(':')`` 会把盘符 ``C`` 误当文件名、
+        其余塞进 content。用非贪婪正则 ``^(.*?):(\\d+):(.*)$``--盘符冒号后总是
+        跟 ``\\`` 而非数字，非贪婪首组会正确停在真正的 ``:行号:`` 处。无 -n 时
+        格式 ``path:content``，用 ``rsplit(':', 1)`` 从右切，保留含盘符的 path
+        （content 含冒号时仍有歧义，属文本解析的固有局限，但从右切远优于从左切
+        --从左切在 Windows 上恒得盘符字母）。
+        """
         matches = []
-        
+
         for line in stdout.strip().split('\n'):
             if not line:
                 continue
 
-            # grep -n 格式: filename:line_number:content
-            # grep 无-n格式: filename:content
-            if ':' in line:
-                parts = line.split(':', 2 if show_line_numbers else 1)
-                
-                if len(parts) >= 2:
-                    file_path = parts[0]
-                    
-                    if show_line_numbers and len(parts) == 3:
-                        try:
-                            line_num = int(parts[1])
-                            content = parts[2]
-                            matches.append({
-                                "file": file_path,
-                                "line": line_num,
-                                "content": content
-                            })
-                        except ValueError:
-                            # 如果line_num不是数字，作为普通内容处理
-                            matches.append({
-                                "file": file_path,
-                                "content": ':'.join(parts[1:])
-                            })
-                    else:
-                        content = parts[1] if len(parts) > 1 else parts[0]
-                        matches.append({
-                            "file": file_path,
-                            "content": content
-                        })
+            if show_line_numbers:
+                # path:linenum:content -- 非贪婪匹配 path，避开 Windows 盘符冒号
+                m = re.match(r'^(.*?):(\d+):(.*)$', line)
+                if m:
+                    matches.append({
+                        "file": m.group(1),
+                        "line": int(m.group(2)),
+                        "content": m.group(3)
+                    })
+                    continue
+                # 退化兜底：行号缺失时按 path:content 处理
+                if ':' in line:
+                    file_path, content = line.rsplit(':', 1)
+                    matches.append({"file": file_path, "content": content})
+            else:
+                # path:content -- 从右切保留含盘符的 path
+                if ':' in line:
+                    file_path, content = line.rsplit(':', 1)
+                    matches.append({"file": file_path, "content": content})
 
         return {
             "matches": matches

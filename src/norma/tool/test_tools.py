@@ -146,6 +146,68 @@ async def test_ls_glob_grep() -> bool:
     return True
 
 
+async def test_grep_single_file_and_content_modes() -> bool:
+    """Grep 单文件 count/content 模式 + Windows 盘符路径解析。
+
+    三个回归点（本机 Windows，路径含盘符冒号 ``C:\\...``）：
+    1. 单文件 count 模式：此前 ``_search_batch_files`` 仅多文件加 -H，单文件
+       ``grep -c`` 输出裸数字（无 ':'），``_parse_count_output`` 跳过 -> 返回 0
+       匹配（即使有匹配）。修复：始终加 -H，输出 ``file:count``。
+    2. 单文件 content + -n：此前无 -H 时 ``grep -n`` 输出 ``1:hello world`` 被误
+       解析为 file='1'、无 line 字段。修复：-H + 非贪婪正则。
+    3. content + -n（含目录递归）：path 含盘符冒号，从左 ``split(':')`` 把盘符
+       'C' 当文件名。修复：非贪婪正则 ``^(.*?):(\\d+):(.*)$``（盘符冒号后跟
+       ``\\`` 非数字，首组停在真正 ``:行号:``）。
+    """
+    from norma.tool.grep_tool.grep_tool import GrepTool
+
+    g = GrepTool()
+    with tempfile.TemporaryDirectory() as d:
+        f = os.path.join(d, "solo.txt")
+        Path(f).write_text("hello world\nfoo bar\nhello again\n", encoding="utf-8")
+
+        # 1) 单文件 count：应捕获该文件 + 2 处匹配
+        rc = await _run(g, "Grep", {"pattern": "hello", "path": f, "output_mode": "count"})
+        if rc.is_error:
+            return False
+        rc_data = json.loads(rc.content)
+        rc_results = rc_data.get("results", [])
+        if len(rc_results) != 1 or rc_results[0].get("count") != 2 \
+                or rc_results[0].get("file") != f:
+            return False
+
+        # 2) 单文件 content + -n：2 条匹配，file 为真实路径（非行号 '1'/'3'），行号 [1,3]
+        rt = await _run(g, "Grep", {"pattern": "hello", "path": f,
+                                    "output_mode": "content", "-n": True})
+        if rt.is_error:
+            return False
+        rt_matches = json.loads(rt.content).get("results", {}).get("matches", [])
+        if len(rt_matches) != 2:
+            return False
+        for m in rt_matches:
+            if m.get("file") != f or "line" not in m or "hello" not in m.get("content", ""):
+                return False
+        if sorted(m["line"] for m in rt_matches) != [1, 3]:
+            return False
+
+        # 3) 目录 content + -n：2 条匹配，file 含 solo.txt（非盘符 'C'），行号 [1,3]
+        rdr = await _run(g, "Grep", {"pattern": "hello", "path": d,
+                                     "output_mode": "content", "-n": True})
+        if rdr.is_error:
+            return False
+        dir_matches = json.loads(rdr.content).get("results", {}).get("matches", [])
+        if len(dir_matches) != 2:
+            return False
+        for m in dir_matches:
+            if not str(m.get("file", "")).endswith("solo.txt") \
+                    or "line" not in m or "hello" not in m.get("content", ""):
+                return False
+        if sorted(m["line"] for m in dir_matches) != [1, 3]:
+            return False
+
+    return True
+
+
 # =====================================================================
 # Bash
 # =====================================================================
@@ -371,6 +433,8 @@ async def _amain() -> int:
          test_edit_atomic_preserves_original_on_failure),
         ("write_overwrite_atomic_preserves_original_on_failure",
          test_write_overwrite_atomic_preserves_original_on_failure),
+        ("grep_single_file_and_content_modes",
+         test_grep_single_file_and_content_modes),
     ]
     failures = 0
     for name, fn in tests:

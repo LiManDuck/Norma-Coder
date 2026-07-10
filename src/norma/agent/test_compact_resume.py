@@ -136,6 +136,98 @@ async def test_restore_trims_at_boundary(tmp_cwd: str, config_home: str) -> None
     print("[PASS] test_restore_trims_at_boundary")
 
 
+async def test_restore_tool_calls_roundtrip(tmp_cwd: str, config_home: str) -> None:
+    """restore_from_session 完整重建含 tool_calls / reason_content / tool 消息的多轮对话。
+
+    此前 test_restore_trims 用 ``tool_calls: None``，未覆盖：
+    - assistant.tool_calls 重建（id/name/arguments）
+    - reason_content 透传
+    - tool 消息重建（tool_call_id / tool_name / content / is_error）
+    - tool_call_id 链接（assistant.tool_calls[i].id == tool.tool_result.id）
+    """
+    os.environ["NORMA_CONFIG_HOME"] = config_home
+    sm = SessionManager(cwd=tmp_cwd)
+    rec = sm.create(title="tool-roundtrip")
+    sid = rec.session_id
+
+    # 构造多轮工具对话：user -> assistant(带 tool_calls+推理) -> tool -> assistant(最终)
+    sm.append({"type": "user", "content": "读取 a.py"})
+    sm.append({
+        "type": "assistant",
+        "content": "我来读取文件",
+        "reason_content": "需要先用 Read 工具",
+        "tool_calls": [{
+            "tool_call_id": "tc_1",
+            "tool_call_name": "Read",
+            "tool_call_arguments": {"file_path": "a.py"},
+        }],
+    })
+    sm.append({
+        "type": "tool",
+        "tool_call_id": "tc_1",
+        "tool_name": "Read",
+        "content": "print('hi')",
+        "is_error": False,
+    })
+    sm.append({"type": "assistant", "content": "文件内容是 print('hi')", "tool_calls": None})
+
+    agent = _make_agent(tmp_cwd, sm)
+    restored = await agent.restore_from_session(sid)
+
+    msgs = agent.memory._messages
+    # system + user + assistant(tool_calls) + tool + assistant = 5
+    assert len(msgs) == 5, f"期望 5 条消息，实际 {len(msgs)}"
+    assert restored == 4, f"期望 restored=4（4 条非系统消息），实际 {restored}"
+
+    asst_with_tc = msgs[2]
+    assert isinstance(asst_with_tc, AssistantMessage)
+    assert asst_with_tc.reason_content == "需要先用 Read 工具", (
+        f"reason_content 应透传，实际: {asst_with_tc.reason_content!r}")
+    assert asst_with_tc.tool_calls is not None and len(asst_with_tc.tool_calls) == 1
+    tc = asst_with_tc.tool_calls[0]
+    assert tc.tool_call_id == "tc_1", f"tool_call_id 应为 tc_1，实际 {tc.tool_call_id!r}"
+    assert tc.tool_call_name == "Read", f"tool_call_name 应为 Read，实际 {tc.tool_call_name!r}"
+    assert tc.tool_call_arguments == {"file_path": "a.py"}, (
+        f"tool_call_arguments 应为 dict，实际 {tc.tool_call_arguments!r}")
+
+    tool_msg = msgs[3]
+    assert isinstance(tool_msg, ToolMessage)
+    assert tool_msg.tool_result.tool_call_id == "tc_1", (
+        f"tool 消息 tool_call_id 应为 tc_1，实际 {tool_msg.tool_result.tool_call_id!r}")
+    assert tool_msg.tool_result.tool_call_name == "Read"
+    assert tool_msg.content == "print('hi')", f"tool content 应透传，实际 {tool_msg.content!r}"
+    assert tool_msg.tool_result.is_error is False
+    # 链接一致性：assistant 的 tool_call_id 与 tool 消息的 tool_call_id 必须匹配
+    assert tc.tool_call_id == tool_msg.tool_result.tool_call_id, "tool_call_id 链接断裂"
+
+    assert isinstance(msgs[4], AssistantMessage) and msgs[4].content == "文件内容是 print('hi')"
+    print("[PASS] test_restore_tool_calls_roundtrip")
+
+
+async def test_restore_tool_error_flag(tmp_cwd: str, config_home: str) -> None:
+    """tool 消息 is_error=True 应在恢复后保留（错误工具结果不应被静默改为成功）。"""
+    os.environ["NORMA_CONFIG_HOME"] = config_home
+    sm = SessionManager(cwd=tmp_cwd)
+    rec = sm.create(title="tool-error")
+    sid = rec.session_id
+    sm.append({"type": "user", "content": "x"})
+    sm.append({
+        "type": "assistant", "content": "", "reason_content": None,
+        "tool_calls": [{"tool_call_id": "tc_e", "tool_call_name": "Bash",
+                        "tool_call_arguments": {"command": "bad-cmd"}}],
+    })
+    sm.append({"type": "tool", "tool_call_id": "tc_e", "tool_name": "Bash",
+                "content": "command not found", "is_error": True})
+
+    agent = _make_agent(tmp_cwd, sm)
+    await agent.restore_from_session(sid)
+    tool_msg = agent.memory._messages[3]
+    assert isinstance(tool_msg, ToolMessage)
+    assert tool_msg.tool_result.is_error is True, "is_error=True 应保留"
+    assert tool_msg.content == "command not found"
+    print("[PASS] test_restore_tool_error_flag")
+
+
 async def test_micro_compact(tmp_cwd: str, config_home: str) -> None:
     """微压缩：截断较早的 tool_result，保留近期 N 条，不删消息、保留 tool_call_id"""
     os.environ["NORMA_CONFIG_HOME"] = config_home
@@ -194,6 +286,8 @@ async def main() -> int:
     for runner, name in (
         (test_compact_writes_boundary, "compact_writes_boundary"),
         (test_restore_trims_at_boundary, "restore_trims_at_boundary"),
+        (test_restore_tool_calls_roundtrip, "restore_tool_calls_roundtrip"),
+        (test_restore_tool_error_flag, "restore_tool_error_flag"),
         (test_micro_compact, "micro_compact"),
     ):
         with tempfile.TemporaryDirectory() as tmp_cwd, \

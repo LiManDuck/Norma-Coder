@@ -73,6 +73,12 @@ class MCPManager:
                 )
             except Exception as e:
                 logger.error(f"Failed to connect MCP server '{name}': {e}")
+                # connect/discover 抛错时 client 可能已启动子进程与 read loop，
+                # 必须断开以免泄漏孤儿进程；disconnect 对未启动的 client 是 no-op。
+                try:
+                    await client.disconnect()
+                except Exception as de:
+                    logger.error(f"Error cleaning up MCP server '{name}': {de}")
 
     async def disconnect_all(self) -> None:
         """断开所有 MCP 服务器连接"""

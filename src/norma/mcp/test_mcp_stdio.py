@@ -88,6 +88,65 @@ def main():
 main()
 '''
 
+# ---- mock MCP 服务器脚本（tools/list_changed 变体）----
+# 首次 tools/list 返回 2 工具，并在响应后推送 notifications/tools/list_changed；
+# 此后的 tools/list 返回 3 工具（新增 extra）。用于验证客户端重发现不死锁。
+_MOCK_SERVER_LIST_CHANGED = r'''
+import json, sys
+
+_list_count = 0
+
+def handle(method, params):
+    global _list_count
+    if method == "initialize":
+        return {"protocolVersion": "2024-11-05", "capabilities": {"tools": {}},
+                "serverInfo": {"name": "mock-lc", "version": "0.1"}}
+    if method == "tools/list":
+        _list_count += 1
+        tools = [
+            {"name": "echo", "description": "echo text back",
+             "inputSchema": {"type": "object",
+                             "properties": {"text": {"type": "string"}}}},
+            {"name": "add", "description": "add two numbers",
+             "inputSchema": {"type": "object",
+                             "properties": {"a": {"type": "number"},
+                                            "b": {"type": "number"}}}},
+        ]
+        if _list_count >= 2:
+            tools.append({"name": "extra", "description": "added after list_changed",
+                          "inputSchema": {"type": "object", "properties": {}}})
+        return {"tools": tools}
+    if method == "tools/call":
+        return {"content": [{"type": "text", "text": "ok"}], "isError": False}
+    return {}
+
+def main():
+    global _list_count
+    for line in sys.stdin:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            msg = json.loads(line)
+        except Exception:
+            continue
+        if "id" in msg:
+            resp = {"jsonrpc": "2.0", "id": msg["id"],
+                    "result": handle(msg.get("method"), msg.get("params", {}))}
+            sys.stdout.write(json.dumps(resp) + "\n")
+            sys.stdout.flush()
+            # 首次 tools/list 响应之后，推送 list_changed 通知，触发客户端重发现；
+            # 重发现的第二次 tools/list 会拿到含 extra 的 3 工具。
+            if msg.get("method") == "tools/list" and _list_count == 1:
+                notif = {"jsonrpc": "2.0",
+                         "method": "notifications/tools/list_changed", "params": {}}
+                sys.stdout.write(json.dumps(notif) + "\n")
+                sys.stdout.flush()
+        # 通知（无 id）无需响应
+
+main()
+'''
+
 
 async def _run(tmpdir: str) -> None:
     server_path = Path(tmpdir) / "mock_mcp_server.py"
@@ -200,12 +259,65 @@ async def _run_crash(tmpdir: str) -> None:
         await mgr.disconnect_all()
 
 
+async def _run_list_changed(tmpdir: str) -> None:
+    """tools/list_changed 通知触发重发现，且不得死锁。
+
+    服务器在首次 tools/list 响应后推送 notifications/tools/list_changed，客户端
+    _read_loop 收到后应重发现（第二次 tools/list 返回含 extra 的 3 工具）。
+
+    回归一个死锁缺陷：_read_loop 原地 ``await discover_tools()``，而 discover_tools
+    内部又 await 工具列表响应；该响应只能由 _read_loop 回到 readline() 才能读出
+    -> 互相等待，直到 _send_request 的 60s 超时。期间该 client 上所有后续请求的
+    响应也无法被读取，整条连接瘫痪。修复为 ``create_task`` 异步重发现后，read loop
+    继续轮询 stdout，重发现响应被正常读出，client.tools 在数秒内更新为 3。
+
+    断言：初始 2 工具；8s 内重发现出 extra（共 3 工具）。用 await 的旧实现会死锁
+    60s，8s 内永远等不到 extra -> 断言失败。
+    """
+    import time
+    server_path = Path(tmpdir) / "mock_lc_server.py"
+    server_path.write_text(_MOCK_SERVER_LIST_CHANGED, encoding="utf-8")
+
+    mgr = MCPManager()
+    mgr.load_config({
+        "mcpServers": {
+            "mock": {"command": sys.executable, "args": [str(server_path)]}
+        }
+    })
+    await mgr.connect_all()
+    try:
+        client = mgr.clients["mock"]
+        assert len(client.tools) == 2, (
+            f"初始应发现 2 工具，实际 {len(client.tools)}: "
+            f"{[t.name for t in client.tools]}")
+        print(f"[..] 初始 {len(client.tools)} 工具，等待 list_changed 重发现...")
+
+        # 轮询等待重发现（create_task 异步）：应出现 extra 工具
+        deadline = time.monotonic() + 8.0
+        names = [t.name for t in client.tools]
+        while time.monotonic() < deadline:
+            names = [t.name for t in client.tools]
+            if "extra" in names:
+                break
+            await asyncio.sleep(0.1)
+
+        assert "extra" in names, (
+            f"tools/list_changed 重发现未生效，8s 内仍为 {names}（应含 extra 的 3 工具）。"
+            f"若 _read_loop 内用 await 而非 create_task，会死锁 60s，重发现永不完成。")
+        assert len(client.tools) == 3, (
+            f"重发现后应为 3 工具，实际 {len(client.tools)}: {names}")
+        print(f"[PASS] tools/list_changed re-discover (non-deadlocking): {names}")
+    finally:
+        await mgr.disconnect_all()
+
+
 async def main() -> int:
     failures = 0
     with tempfile.TemporaryDirectory() as tmpdir:
         for runner, name in (
             (_run, "mcp_stdio_e2e"),
             (_run_crash, "mcp_crash_fast_fail"),
+            (_run_list_changed, "mcp_list_changed_no_deadlock"),
         ):
             try:
                 await runner(tmpdir)

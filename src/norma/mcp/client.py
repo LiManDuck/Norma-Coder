@@ -120,6 +120,18 @@ class MCPClient:
         logger.info(f"Discovered {len(self._tools)} tools from '{self.server_name}'")
         return self._tools
 
+    async def _rediscover_tools(self) -> None:
+        """处理 notifications/tools/list_changed：重新发现工具。
+
+        必须在独立任务中运行（由 _read_loop 经 ``create_task`` 调度），不可在
+        _read_loop 内直接 ``await``，否则会与读取循环互相等待而死锁（详见
+        _read_loop 内注释）。此处仅捕获并记录异常，避免独立任务里的异常被静默吞掉。
+        """
+        try:
+            await self.discover_tools()
+        except Exception as e:
+            logger.error(f"Failed to re-discover tools: {e}")
+
     async def call_tool(self, tool_name: str, arguments: Dict[str, Any]) -> Any:
         """调用 MCP 工具"""
         result = await self._send_request("tools/call", {
@@ -244,13 +256,16 @@ class MCPClient:
                 # 通知消息
                 elif "method" in message:
                     method = message["method"]
-                    params = message.get("params", {})
                     if method == "notifications/tools/list_changed":
                         logger.info(f"MCP server '{self.server_name}' tools changed, re-discovering")
-                        try:
-                            await self.discover_tools()
-                        except Exception as e:
-                            logger.error(f"Failed to re-discover tools: {e}")
+                        # 必须用 create_task 异步重发现，绝不能 await：_read_loop 是
+                        # 唯一读取 stdout 的协程，若在此 await discover_tools()（其内部
+                        # 又 await 工具列表响应），本协程会挂起等响应、而响应只能由本协程
+                        # 回到 readline() 才能读出 -> 死锁，直到 _send_request 的 60s
+                        # 超时。期间该 client 上所有后续请求（tools/call 等）的响应同样
+                        # 无法被读取，整条连接瘫痪 60s。改 create_task 让 read loop 继续
+                        # 轮询 stdout，重发现响应由它正常读出并结算 future。
+                        asyncio.create_task(self._rediscover_tools())
 
         except asyncio.CancelledError:
             pass

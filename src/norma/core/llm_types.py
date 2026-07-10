@@ -228,7 +228,7 @@ class BaseLLM:
     @abstractmethod
     async def chat(
         self,
-        llm_rquest: LLMRequest,
+        llm_request: LLMRequest,
         **kwargs: Any,
     ) -> LLMResponse:
         pass
@@ -236,7 +236,7 @@ class BaseLLM:
     @abstractmethod
     async def stream_chat(
         self,
-        llm_rquest: LLMRequest,
+        llm_request: LLMRequest,
         **kwargs: Any,
     ) -> AsyncGenerator[LLMResponse, None]:
         pass

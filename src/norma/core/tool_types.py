@@ -156,7 +156,7 @@ class Tool:
                     try:
                         # 尝试解析为 JSON 值
                         result[key] = json.loads(value)
-                    except:
+                    except Exception:
                         # 保持为字符串
                         result[key] = value.strip()
                 if result:

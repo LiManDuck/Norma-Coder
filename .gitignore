@@ -5,6 +5,8 @@ __pycache__/
 .eggs/
 build/
 dist/
+*.whl
+*.egg
 
 # 虚拟环境
 .venv/

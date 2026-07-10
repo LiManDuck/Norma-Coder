@@ -220,7 +220,7 @@ class MCPClient:
             while True:
                 line = await self._process.stdout.readline()
                 if not line:
-                    break
+                    break  # EOF：服务器关闭 stdout / 崩溃 / 退出
 
                 try:
                     message = json.loads(line.decode())
@@ -256,3 +256,19 @@ class MCPClient:
             pass
         except Exception as e:
             logger.error(f"MCP read loop error: {e}")
+        finally:
+            # 连接断开（EOF/崩溃/取消）：立即失败所有挂起请求，否则调用方需
+            # 等满 _send_request 的 60s 超时才感知--服务器崩溃时这是很差的体验。
+            self._fail_pending(ConnectionError(
+                f"MCP server '{self.server_name}' closed connection"
+            ))
+
+    def _fail_pending(self, exc: Exception) -> None:
+        """把所有挂起请求的 future 置为异常（连接断开时调用）"""
+        if not self._pending_requests:
+            return
+        pending = list(self._pending_requests.values())
+        self._pending_requests.clear()
+        for fut in pending:
+            if not fut.done():
+                fut.set_exception(exc)

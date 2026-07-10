@@ -64,6 +64,9 @@ def handle(method, params):
         if name == "boom":
             return {"content": [{"type": "text", "text": "intentional failure"}],
                     "isError": True}
+        if name == "crash":
+            # 模拟服务器进程崩溃：直接退出，不写任何响应
+            sys.exit(1)
         return {"content": [{"type": "text", "text": "unknown tool"}], "isError": True}
     return {}
 
@@ -156,19 +159,64 @@ async def _run(tmpdir: str) -> None:
         await mgr.disconnect_all()
 
 
+async def _run_crash(tmpdir: str) -> None:
+    """服务器进程崩溃（不响应即退出）：挂起请求应快速失败，而非等满 60s 超时。
+
+    验证 _read_loop 的 finally 在 EOF 时 _fail_pending：crash 工具让服务器
+    sys.exit，stdout 关闭 -> read_loop EOF -> 挂起的 tools/call future 被
+    立即置为 ConnectionError -> call_tool 抛错 -> MCPTool.execute 捕获为
+    is_error=True。整条链路应在数秒内完成（远小于 60s）。
+    """
+    import time
+    server_path = Path(tmpdir) / "mock_mcp_server.py"
+    server_path.write_text(_MOCK_SERVER, encoding="utf-8")
+
+    mgr = MCPManager()
+    mgr.load_config({
+        "mcpServers": {
+            "mock": {"command": sys.executable, "args": [str(server_path)]}
+        }
+    })
+    await mgr.connect_all()
+    try:
+        from norma.mcp.client import MCPToolInfo
+        from norma.mcp.tool import MCPTool
+        client = mgr.clients["mock"]
+        crash_info = MCPToolInfo(name="crash", description="crashes server",
+                                 inputSchema={"type": "object", "properties": {}})
+        crash = MCPTool(client=client, tool_info=crash_info, server_name="mock")
+        req = ToolRequest(tool_call_id="c3", tool_call_name="mcp__mock__crash",
+                          tool_call_arguments={})
+
+        t0 = time.monotonic()
+        res = await crash.execute(req)
+        elapsed = time.monotonic() - t0
+
+        assert res.is_error is True, "服务器崩溃后调用应失败 (is_error=True)"
+        assert elapsed < 30.0, (
+            f"应在 EOF 后快速失败，而非等满 60s 超时，实际 {elapsed:.1f}s")
+        print(f"[PASS] server crash fast-fail (elapsed={elapsed:.2f}s < 30s)")
+    finally:
+        await mgr.disconnect_all()
+
+
 async def main() -> int:
     failures = 0
     with tempfile.TemporaryDirectory() as tmpdir:
-        try:
-            await _run(tmpdir)
-        except AssertionError as exc:
-            print(f"[FAIL] {exc}")
-            failures += 1
-        except Exception as exc:  # noqa: BLE001
-            import traceback
-            print(f"[ERROR] {exc}")
-            traceback.print_exc()
-            failures += 1
+        for runner, name in (
+            (_run, "mcp_stdio_e2e"),
+            (_run_crash, "mcp_crash_fast_fail"),
+        ):
+            try:
+                await runner(tmpdir)
+            except AssertionError as exc:
+                print(f"[FAIL] {name}: {exc}")
+                failures += 1
+            except Exception as exc:  # noqa: BLE001
+                import traceback
+                print(f"[ERROR] {name}: {exc}")
+                traceback.print_exc()
+                failures += 1
     if failures:
         print(f"\n{failures} test(s) failed")
         return 1

@@ -9,6 +9,7 @@ PermissionDecision），本模块不再持有权限相关逻辑。
 """
 
 import asyncio
+import json
 import logging
 from typing import Any, Dict, List, Optional
 
@@ -98,7 +99,10 @@ class NormaArtifact:
             return ToolRequestResult(
                 request=tool_request,
                 result=None,
-                content=f'{{"error": "Tool \'{tool_name}\' not found"}}',
+                content=json.dumps(
+                    {"error": f"Tool '{tool_name}' not found"},
+                    ensure_ascii=False,
+                ),
                 is_error=True,
                 execution_times=0.0,
             )
@@ -112,10 +116,13 @@ class NormaArtifact:
                 return await tool.execute(tool_request)
         except Exception as e:
             logger.error(f"Error executing tool '{tool_name}': {e}", exc_info=True)
+            # 用 json.dumps 而非 f-string 拼接：异常消息常含反斜杠（Windows 路径
+            # C:\Users\...）、双引号或换行，f-string 会产出非法 JSON。与 MCPTool /
+            # task_tools / AgentTool 的错误结果保持一致（content 始终是合法 JSON）。
             return ToolRequestResult(
                 request=tool_request,
                 result=None,
-                content=f'{{"error": "{str(e)}"}}',
+                content=json.dumps({"error": str(e)}, ensure_ascii=False),
                 is_error=True,
                 execution_times=0.0,
             )

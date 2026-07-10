@@ -203,6 +203,64 @@ async def test_task_lifecycle() -> bool:
 
 
 # =====================================================================
+# 工具执行错误结果（tool_core.execute_tool 异常兜底）
+# =====================================================================
+
+async def test_execute_tool_error_content_is_valid_json() -> bool:
+    """execute_tool 捕获工具异常时，content 必须是合法 JSON。
+
+    此前用 f-string ``f'{{"error": "{str(e)}"}}'`` 拼接，异常消息含反斜杠
+    （Windows 路径 C:\\Users\\...）、双引号或换行时会产出非法 JSON，违反
+    content 是 JSON 字符串的隐式契约（MCPTool/task_tools/AgentTool 均用
+    json.dumps）。本用例用含这三类字符的异常消息验证修复。
+    """
+    from norma.core.tool_types import Tool, ToolRequest, ToolRequestResult
+    from norma.tool.tool_core import NormaArtifact
+
+    class _ExplodingTool(Tool):
+        @property
+        def name(self) -> str:
+            return "Explode"
+
+        @property
+        def description(self) -> str:
+            return "raises"
+
+        async def execute(self, tool_request: ToolRequest) -> ToolRequestResult:
+            # 含反斜杠（Windows 路径）、双引号、换行--f-string 拼接会全部破坏 JSON
+            raise RuntimeError('boom at "C:\\Users\\admin" path\nsecond line')
+
+    mgr = NormaArtifact(tools=[_ExplodingTool()])
+    res = await mgr.execute_tool(
+        ToolRequest(tool_call_id="x1", tool_call_name="Explode",
+                    tool_call_arguments={})
+    )
+    if not res.is_error:
+        return False
+    # content 必须是可解析的合法 JSON（修复前在此抛 JSONDecodeError）
+    try:
+        parsed = json.loads(res.content)
+    except json.JSONDecodeError:
+        return False
+    # 错误消息完整往返（反斜杠/引号/换行不被破坏）
+    if parsed.get("error") != 'boom at "C:\\Users\\admin" path\nsecond line':
+        return False
+
+    # 未知工具分支同样须产出合法 JSON
+    res2 = await mgr.execute_tool(
+        ToolRequest(tool_call_id="x2", tool_call_name="Nope",
+                    tool_call_arguments={})
+    )
+    if not res2.is_error:
+        return False
+    try:
+        json.loads(res2.content)
+    except json.JSONDecodeError:
+        return False
+    return True
+
+
+# =====================================================================
 # 入口
 # =====================================================================
 
@@ -213,6 +271,8 @@ async def _amain() -> int:
         ("ls_glob_grep", test_ls_glob_grep),
         ("bash", test_bash),
         ("task_lifecycle", test_task_lifecycle),
+        ("execute_tool_error_content_is_valid_json",
+         test_execute_tool_error_content_is_valid_json),
     ]
     failures = 0
     for name, fn in tests:

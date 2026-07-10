@@ -228,6 +228,52 @@ async def test_bash() -> bool:
     return True
 
 
+async def test_bash_nonascii_and_error_output() -> bool:
+    """Bash 在中文 Windows(cp936) 下的两项修复。
+
+    1. 非 ASCII 命令/输出：Popen ``text=True`` 默认用 locale 编码（本机 cp936/gbk），
+       ① ``stdin.write`` 发送含非 ASCII 的命令时 ``'gbk' codec can't encode`` 直接抛错；
+       ② git-bash 的 UTF-8 输出被按 gbk 误解码成乱码或打断读取线程。改
+       ``encoding='utf-8', errors='replace'`` 后中文命令往返与输出解码正确。
+    2. 错误路径保留 output/stderr/exit_code：此前 ``is_error=True`` 的 content 仅含
+       ``error``+``session_id``，丢弃命令的 output/stderr，agent 无法据失败输出诊断
+       （编译错误/测试失败/traceback 全丢）。改为与成功路径结构对齐。
+    """
+    from norma.tool.bash_tool.bash_tool import BashTool
+
+    with tempfile.TemporaryDirectory() as d:
+        bt = BashTool(cwd=d)
+
+        # 1) 非 ASCII 命令往返 + UTF-8 输出解码
+        r = await _run(bt, "Bash", {"command": "printf '你好世界\n'", "timeout": 8000})
+        if r.is_error:
+            return False
+        if json.loads(r.content).get("output") != "你好世界\n":
+            return False
+
+        # 2) 失败命令保留 stderr + exit_code（此前错误路径无此二字段）
+        r2 = await _run(bt, "Bash", {"command": "ls /no_such_path_xyz_123", "timeout": 8000})
+        if not r2.is_error:
+            return False
+        d2 = json.loads(r2.content)
+        if not d2.get("exit_code"):  # 非零退出码须存在
+            return False
+        if not d2.get("stderr"):  # ls 的报错文本须保留
+            return False
+        if "exited with code" not in d2.get("error", ""):
+            return False
+
+        # 3) 失败命令的 stdout 也保留：先输出再失败（; 不短路）
+        r3 = await _run(bt, "Bash", {"command": "echo BEFORE_FAIL; false", "timeout": 8000})
+        if not r3.is_error:
+            return False
+        d3 = json.loads(r3.content)
+        if d3.get("output") != "BEFORE_FAIL\n" or d3.get("exit_code") != 1:
+            return False
+
+    return True
+
+
 # =====================================================================
 # Task 生命周期
 # =====================================================================
@@ -435,6 +481,8 @@ async def _amain() -> int:
          test_write_overwrite_atomic_preserves_original_on_failure),
         ("grep_single_file_and_content_modes",
          test_grep_single_file_and_content_modes),
+        ("bash_nonascii_and_error_output",
+         test_bash_nonascii_and_error_output),
     ]
     failures = 0
     for name, fn in tests:

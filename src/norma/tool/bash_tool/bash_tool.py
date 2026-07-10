@@ -172,6 +172,13 @@ class BashSession:
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                     text=True,
+                    # git-bash 以 UTF-8 收发；text=True 默认用 locale 编码（中文
+                    # Windows 为 cp936/gbk），会导致：① stdin.write 发送含非 ASCII
+                    # 的命令时 'gbk' codec can't encode 直接抛错；② git-bash 的
+                    # UTF-8 输出被按 gbk 误解码成乱码或 UnicodeDecodeError 打断
+                    # 读取线程。显式 UTF-8 + errors=replace 对齐 git-bash 且不崩。
+                    encoding="utf-8",
+                    errors="replace",
                     bufsize=0,
                     cwd=self.cwd,
                     preexec_fn=_BASH_PREEXEC_FN,  # POSIX 创建新进程组便于终止；Windows 为 None
@@ -686,13 +693,20 @@ BashTool使用说明
         
         # 构造返回结果
         is_error = not result.get("success", False)
-        
+
         # 生成内容字符串
+        # 错误路径同样须保留 output/stderr/exit_code：失败命令的实际输出（编译错误、
+        # 测试失败、traceback、git 报错）是 agent 诊断问题的关键。此前错误路径仅
+        # 返回 "Command exited with code N" 并丢弃 output/stderr，agent 无法据错
+        # 修复。两条路径结构对齐，并统一 ensure_ascii=False 以正确承载中文输出。
         if is_error:
             content = json.dumps({
                 "error": result.get("error", "Unknown error"),
+                "output": result.get("output", ""),
+                "stderr": result.get("stderr", ""),
+                "exit_code": result.get("exit_code"),
                 "session_id": result.get("session_id")
-            })
+            }, ensure_ascii=False)
         else:
             content_dict = {
                 "output": result.get("output", ""),

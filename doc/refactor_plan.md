@@ -85,6 +85,8 @@
 - [x] EditTool 原子写入（数据完整性）：`_edit_file` 直写 `open(file,'w')` 截断目标后逐步写入，写入中途崩溃/中断（Ctrl+C/OOM/磁盘满）留半截文件、无回滚。改用 `WriteTool._atomic_write` 同款模式：同目录 `tempfile.mkstemp` + `os.fdopen`/flush/`os.fsync` 落盘 + `os.replace` 原子替换 + 失败清理临时文件。回归 `test_tools.py` 新增 `edit_atomic_preserves_original_on_failure`（6->7 项，模拟 `os.replace` 失败断言原文件完整 + 无残留临时文件，revert-verify 确认用例有齿）。
 - [x] WriteTool 覆盖写入原子性（Windows 实测缺陷）：`_atomic_write` 收尾 `shutil.move` 在 Windows 覆盖已存在文件时回退 `copy2`+`unlink`（非原子，拷贝中途崩溃截断目标），覆盖正是编辑主路径。改 `os.replace`（Windows/POSIX 均原子替换）。回归 `test_tools.py` 新增 `write_overwrite_atomic_preserves_original_on_failure`（7->8 项，revert-verify 有齿）。
 - [x] GrepTool 单文件 count/content + Windows 盘符解析（实测三缺陷）：单文件缺 `-H` 致 count 丢匹配、content 行号误当文件名；`_parse_content_output` 从左 `split(':')` 把盘符 `C:` 当分隔符致 content 模式 Windows 下全废。修：始终 `-H` + 非贪婪正则 `^(.*?):(\d+):(.*)$`（盘符冒号后跟 `\` 非数字，首组停在真 `:行号:`）+ 无 `-n` 用 `rsplit`。回归 `test_tools.py` 新增 `grep_single_file_and_content_modes`（8->9 项，revert-verify 有齿）。
+- [x] BashTool Windows 编码 + 失败命令丢输出（实测两缺陷）：`Popen(text=True)` 默认 locale 编码（中文 Windows cp936），发非 ASCII 命令 `gbk codec can't encode` 抛错、UTF-8 输出误解码。改 `encoding=utf-8,errors=replace`。又错误路径 content 仅含 error+session_id 丢弃 output/stderr/exit_code，agent 无法据失败输出诊断。错误路径改为与成功路径结构对齐。回归 `test_tools.py` 新增 `bash_nonascii_and_error_output`（9->10 项，revert-verify 有齿）。
+
 
 
 

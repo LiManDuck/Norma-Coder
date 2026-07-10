@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import tempfile
 import uuid
 from dataclasses import asdict, dataclass, field
 from enum import Enum
@@ -95,8 +96,26 @@ class TaskStore:
 
     def _save(self, list_id: str, tasks: List[Task]) -> None:
         p = self._path(list_id)
-        with p.open("w", encoding="utf-8") as f:
-            json.dump([t.to_dict() for t in tasks], f, ensure_ascii=False, indent=2)
+        content = json.dumps(
+            [t.to_dict() for t in tasks], ensure_ascii=False, indent=2)
+        # 原子写入：先写临时文件再 os.replace，避免写入中途崩溃/中断
+        # （Ctrl+C、断电、磁盘满）导致任务文件被截断/损坏。``_load`` 对损坏
+        # 文件静默返回 [] -> 整个对话的任务列表丢失。os.replace 在 Windows/POSIX
+        # 均原子替换已存在文件，与 WriteTool/EditTool 一致。
+        temp_fd, temp_path = tempfile.mkstemp(dir=str(p.parent), prefix=".tmp_tasks_")
+        try:
+            with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+                f.write(content)
+                f.flush()
+                os.fsync(temp_fd)
+            os.replace(temp_path, p)
+        except BaseException:
+            # 写入/替换失败时清理临时文件，原任务文件保持完整
+            try:
+                os.unlink(temp_path)
+            except OSError:
+                pass
+            raise
 
     # ---------- API ----------
     async def list(self, list_id: str) -> List[Task]:
